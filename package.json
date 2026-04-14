@@ -1,0 +1,33 @@
+{
+  "name": "complementary-health-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/index.ts",
+    "cli": "tsx src/index.ts",
+    "server": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.1.39",
+    "@langchain/langgraph": "^1.2.8",
+    "@langchain/openai": "^1.4.4",
+    "cheerio": "^1.1.2",
+    "dotenv": "^16.6.1",
+    "duck-duck-scrape": "^2.2.7",
+    "express": "^5.1.0",
+    "playwright": "^1.55.0",
+    "sanitize-html": "^2.17.0",
+    "slugify": "^1.6.6",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.6.1",
+    "@types/sanitize-html": "^2.16.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
