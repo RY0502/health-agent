@@ -17,16 +17,17 @@ const renderRemedy = (remedy: RankedRemedy, rank: number): string => `
     <h3>${rank}. ${escapeHtml(remedy.remedyCanonical)} <span class="pill">${escapeHtml(remedy.modality)}</span></h3>
     <p><strong>Primary score:</strong> ${remedy.primaryScore.toFixed(3)} | <strong>Confidence:</strong> ${escapeHtml(remedy.evidenceConfidence)}</p>
     <p><strong>Independent domains:</strong> ${remedy.independentDomainCount} | <strong>Occurrences:</strong> ${remedy.occurrenceCount}</p>
-    <p><strong>How it is described:</strong> ${escapeHtml(remedy.instructionSummary || "No detailed instructions extracted.")}</p>
+    <p><strong>How reliable sources describe this option:</strong> ${escapeHtml(remedy.instructionSummary || "No detailed description extracted.")}</p>
+    <p><strong>Why it ranked here:</strong></p>
     <ul>${remedy.rationale.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
-    <p><strong>Safety notes:</strong> ${escapeHtml(remedy.safetySummary.join(" | ") || "No special safety note extracted.")}</p>
+    <p><strong>Use notes:</strong> ${escapeHtml(remedy.safetySummary.join(" | ") || "No special use note extracted.")}</p>
     ${
       remedy.image
         ? `<figure>
             <img src="${escapeHtml(remedy.image.imageUrl)}" alt="${escapeHtml(remedy.image.title)}" />
-            <figcaption>${escapeHtml(remedy.image.title)} — source: ${escapeHtml(remedy.image.sourceDomain)} — accuracy=${remedy.image.accuracyScore.toFixed(2)} — max-match=${remedy.image.maxMatchScore.toFixed(2)}</figcaption>
+            <figcaption>${escapeHtml(remedy.image.title)} — source: ${escapeHtml(remedy.image.sourceDomain)} — image accuracy=${remedy.image.accuracyScore.toFixed(2)} — image max-match=${remedy.image.maxMatchScore.toFixed(2)}</figcaption>
           </figure>`
-        : "<p><em>No high-confidence image selected.</em></p>"
+        : "<p><em>No high-confidence image was selected from the researched candidate pool.</em></p>"
     }
   </section>
 `;
@@ -54,7 +55,7 @@ export const renderHtml = (payload: ReportPayload): string => `
   <body>
     <h1>Complementary Health Research Report</h1>
     <p class="muted">Query: ${escapeHtml(payload.query)} | Run: ${escapeHtml(payload.runId)} | Generated: ${escapeHtml(payload.generatedAt)}</p>
-    <div class="warning"><strong>Primary mode:</strong> evidence-first complementary-information ranking. <strong>Secondary mode:</strong> top-match web prevalence appendix only.</div>
+    <div class="warning"><strong>Primary mode:</strong> evidence-first ranking of supportive options described across reliable sources. <strong>Secondary mode:</strong> top-match web prevalence appendix only.</div>
     <p>${escapeHtml(payload.disclaimer)}</p>
 
     ${payload.status === "out_of_scope" ? `<h2>Result</h2><p>${escapeHtml(payload.outOfScopeMessage || "This query is out of scope for the agent.")}</p>` : ""}
@@ -64,7 +65,7 @@ export const renderHtml = (payload: ReportPayload): string => `
         ? `<h2>Primary evidence-ranked results</h2>${payload.primaryResults.map((item, index) => renderRemedy(item, index + 1)).join("")}
            <h2>Methodology</h2><ul>${payload.methodology.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
            <h2>Secondary top-match appendix</h2>
-           <p class="muted">This appendix reflects web prevalence and agreement patterns. It is not the primary evidence ranking and can overstate repeated low-quality content.</p>
+           <p class="muted">This appendix reflects what appeared most often across the researched web corpus. It is informative but not the main evidence ranking and may overstate repeated weak content.</p>
            <div class="secondary">${payload.secondaryTopMatches.map((item, index) => renderRemedy(item, index + 1)).join("")}</div>`
         : ""
     }

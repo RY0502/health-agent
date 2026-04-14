@@ -3,17 +3,19 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AgentStateType } from "./state.js";
 import { buildRunDir, ensureDir } from "../utils/fs.js";
-import { clamp, overlapScore, sentenceWindow, shortText, tokenize, toTitleCase, unique } from "../utils/text.js";
-import type { ExtractedClaim, Modality, RankedRemedy, SearchPlan, SourceDocument } from "../types.js";
+import { clamp, overlapScore, sentenceWindow, shortText, tokenize, unique } from "../utils/text.js";
+import type { ExtractedClaim, Modality, RankedRemedy, SearchDepth, SearchPlan, SourceDocument, WebSearchHit } from "../types.js";
 import { config } from "../config.js";
 import { DuckDuckGoSearchService } from "../services/search/duckduckgo.js";
+import { PubMedSearchService } from "../services/search/pubmed.js";
 import { fetchDocument } from "../services/retrieval/fetch.js";
 import { extractClaimsWithLlm, llmAvailable } from "../services/llm.js";
 import { rankClaims } from "../services/ranking/scoring.js";
 import { chooseBestImage } from "../services/images/verify.js";
 import { writeReportArtifacts } from "../services/report/render.js";
 
-const searchService = new DuckDuckGoSearchService();
+const duckSearchService = new DuckDuckGoSearchService();
+const pubMedSearchService = new PubMedSearchService();
 
 const OUT_OF_SCOPE_TERMS = [
   "heart attack",
@@ -31,6 +33,13 @@ const OUT_OF_SCOPE_TERMS = [
   "call 911",
 ];
 
+const EXTRA_DEEP_PATTERNS = [
+  /\bextra deep search\b/gi,
+  /\bperform extra deep search\b/gi,
+  /\bextra deep research\b/gi,
+  /\bextra-deep search\b/gi,
+];
+
 const MODALITY_HINTS: Record<Modality, string[]> = {
   acupressure: ["acupressure", "pressure point", "pressure points", "meridian", "pc6", "p6", "yintang"],
   mudra: ["mudra", "mudras", "hand gesture", "hand gestures", "hasta"],
@@ -43,7 +52,7 @@ const MODALITY_HINTS: Record<Modality, string[]> = {
 const REMEDY_LEXICON: Array<{ canonical: string; aliases: string[]; modality: Modality; safety: string[] }> = [
   { canonical: "Yintang", aliases: ["yintang", "extra 1"], modality: "acupressure", safety: ["Avoid pressing irritated skin."] },
   { canonical: "PC6 (Neiguan)", aliases: ["pc6", "p6", "neiguan"], modality: "acupressure", safety: ["Use moderate pressure and avoid bruised skin."] },
-  { canonical: "HT7 (Shenmen)", aliases: ["ht7", "shenmen"], modality: "acupressure", safety: ["Reduce pressure if tenderness increases." ] },
+  { canonical: "HT7 (Shenmen)", aliases: ["ht7", "shenmen"], modality: "acupressure", safety: ["Reduce pressure if tenderness increases."] },
   { canonical: "GV20 (Baihui)", aliases: ["gv20", "baihui"], modality: "acupressure", safety: ["Avoid aggressive stimulation if dizzy."] },
   { canonical: "LI4 (Hegu)", aliases: ["li4", "hegu"], modality: "acupressure", safety: ["Often avoided during pregnancy unless guided by a clinician."] },
   { canonical: "Ear Shen Men", aliases: ["ear shen men", "ear shenmen", "auricular shen men"], modality: "acupressure", safety: ["Keep ear acupressure gentle."] },
@@ -85,49 +94,85 @@ const detectModalities = (query: string): Modality[] => {
 };
 
 const extractKeyTerms = (query: string): string[] =>
-  unique(tokenize(query)).filter((token) => !["best", "most", "effective", "give", "provide", "natural", "top"].includes(token));
+  unique(tokenize(query)).filter((token) => !["best", "most", "effective", "give", "provide", "natural", "top", "extra", "deep", "search"].includes(token));
+
+const detectSearchDepth = (query: string): SearchDepth =>
+  EXTRA_DEEP_PATTERNS.some((pattern) => pattern.test(query)) ? "extra_deep" : "default";
+
+const cleanPromptForSearch = (query: string): string => {
+  let output = query;
+  for (const pattern of EXTRA_DEEP_PATTERNS) {
+    output = output.replace(pattern, " ");
+  }
+  return output.replace(/\s+/g, " ").trim();
+};
+
+const buildTemplateQueries = (baseQuery: string, keyTerms: string[], templates: string[]): string[] => {
+  const variants = [baseQuery, ...keyTerms.map((term) => `${term} ${baseQuery}`), ...keyTerms.map((term) => `${baseQuery} ${term}`)];
+  return unique(
+    variants.flatMap((variant) => templates.map((template) => template.replaceAll("{q}", variant.trim()))),
+  );
+};
 
 const buildPlan = (query: string): SearchPlan => {
-  const modalities = detectModalities(query);
-  const keyTerms = extractKeyTerms(query);
+  const searchDepth = detectSearchDepth(query);
+  const normalizedQuery = cleanPromptForSearch(query);
+  const modalities = detectModalities(normalizedQuery);
+  const keyTerms = extractKeyTerms(normalizedQuery).slice(0, searchDepth === "extra_deep" ? 10 : 6);
   const modalityTerms = modalities.join(" ");
-  const officialQueries = [
-    `${query} site:nccih.nih.gov`,
-    `${query} site:medlineplus.gov`,
-    `${query} site:nih.gov`,
-    `${query} site:who.int`,
-  ];
-  const literatureQueries = [
-    `${query} systematic review`,
-    `${query} meta-analysis`,
-    `${query} randomized trial`,
-    `${query} pubmed`,
-  ];
-  const hospitalQueries = [
-    `${query} hospital patient education`,
-    `${query} site:mskcc.org`,
-    `${query} site:.edu`,
-    `${query} clinic guidance`,
-  ];
-  const traditionalQueries = [
-    `${query} ${modalityTerms} traditional literature`,
-    `${query} ayurveda yoga classical text`,
-    `${query} complementary medicine review`,
-  ];
-  const contradictionQueries = [
-    `${query} contraindications`,
-    `${query} adverse effects`,
-    `${query} evidence insufficient`,
-  ];
-  const imageQueries = [
-    `${query} diagram`,
-    `${query} illustrated`,
-    `${query} point location`,
-    `${query} hand position`,
-  ];
+
+  const officialQueries = buildTemplateQueries(normalizedQuery, keyTerms, [
+    "{q} site:nccih.nih.gov",
+    "{q} site:medlineplus.gov",
+    "{q} site:nih.gov",
+    "{q} site:who.int",
+    "{q} site:fda.gov",
+  ]).slice(0, searchDepth === "extra_deep" ? 30 : 14);
+
+  const literatureQueries = buildTemplateQueries(normalizedQuery, keyTerms, [
+    "{q} systematic review",
+    "{q} meta-analysis",
+    "{q} randomized trial",
+    "{q} pubmed",
+    "{q} integrative medicine review",
+  ]).slice(0, searchDepth === "extra_deep" ? 24 : 10);
+
+  const hospitalQueries = buildTemplateQueries(normalizedQuery, keyTerms, [
+    "{q} hospital patient education",
+    "{q} site:mskcc.org",
+    "{q} site:.edu",
+    "{q} clinic guidance",
+    "{q} site:mayo.edu",
+  ]).slice(0, searchDepth === "extra_deep" ? 24 : 10);
+
+  const traditionalQueries = buildTemplateQueries(normalizedQuery, keyTerms, [
+    "{q} traditional literature",
+    "{q} ayurveda yoga classical text",
+    "{q} complementary medicine review",
+    `{q} ${modalityTerms} classical practice`,
+  ]).slice(0, searchDepth === "extra_deep" ? 24 : 10);
+
+  const contradictionQueries = buildTemplateQueries(normalizedQuery, keyTerms, [
+    "{q} contraindications",
+    "{q} adverse effects",
+    "{q} evidence insufficient",
+    "{q} safety notes",
+  ]).slice(0, searchDepth === "extra_deep" ? 20 : 8);
+
+  const imageQueries = buildTemplateQueries(normalizedQuery, keyTerms, [
+    "{q} diagram",
+    "{q} illustrated",
+    "{q} point location",
+    "{q} hand position",
+    "{q} educational image",
+  ]).slice(0, searchDepth === "extra_deep" ? 24 : 10);
 
   return {
-    normalizedQuery: query.trim(),
+    originalQuery: query.trim(),
+    normalizedQuery,
+    searchDepth,
+    targetWebResults: searchDepth === "extra_deep" ? 250 : 100,
+    targetImageResults: searchDepth === "extra_deep" ? 250 : 100,
     modalities,
     officialQueries,
     literatureQueries,
@@ -136,7 +181,7 @@ const buildPlan = (query: string): SearchPlan => {
     contradictionQueries,
     imageQueries,
     requiredKeywords: keyTerms,
-    excludedKeywords: ["miracle cure", "instant cure", "overnight"],
+    excludedKeywords: ["miracle cure", "instant cure", "overnight", "guaranteed cure"],
   };
 };
 
@@ -160,7 +205,7 @@ const heuristicClaimsFromDocument = (query: string, doc: SourceDocument, modalit
         remedyAliases: item.aliases,
         modality: item.modality,
         targetCondition: condition,
-        claimedBenefit: shortText(localContext || doc.snippet || `Referenced for ${query}.`, 220),
+        claimedBenefit: shortText(localContext || doc.snippet || `Referenced in sources for ${query}.`, 220),
         instructionSummary: shortText(localContext || doc.snippet || `See source text for details on ${item.canonical}.`, 320),
         rationaleSummary: shortText(doc.snippet || localContext || doc.title, 220),
         safetyNotes: item.safety,
@@ -190,6 +235,23 @@ const enrichClaimsWithLlm = async (query: string, doc: SourceDocument): Promise<
   }));
 };
 
+const mergeAndPrioritizeHits = (hits: WebSearchHit[], limit: number): WebSearchHit[] => {
+  const priority: Record<WebSearchHit["sourceTierHint"], number> = {
+    official: 5,
+    literature: 4,
+    hospital: 3,
+    traditional: 2,
+    open_web: 1,
+  };
+  const deduped = new Map<string, WebSearchHit>();
+  for (const hit of hits) {
+    if (!deduped.has(hit.url)) deduped.set(hit.url, hit);
+  }
+  return [...deduped.values()]
+    .sort((a, b) => priority[b.sourceTierHint] - priority[a.sourceTierHint])
+    .slice(0, limit);
+};
+
 export const initializeNode = async (state: AgentStateType) => {
   const runId = crypto.randomUUID().slice(0, 8);
   const input = {
@@ -205,6 +267,8 @@ export const initializeNode = async (state: AgentStateType) => {
     runId,
     outputDir,
     notes: [
+      "The agent summarizes potentially supportive options described across reliable web and literature sources.",
+      "It does not claim diagnosis, cure, or guaranteed outcomes.",
       "Primary ranking uses evidence-weighted consensus, source authority, safety, and query specificity.",
       "Secondary appendix shows top-match frequency and agreement patterns only.",
     ],
@@ -230,42 +294,57 @@ export const planNode = async (state: AgentStateType) => {
   const plan = buildPlan(state.input.query);
   return {
     plan,
-    notes: [...state.notes, `Search plan generated for modalities: ${plan.modalities.join(", ")}.`],
+    notes: [
+      ...state.notes,
+      `Search plan generated for modalities: ${plan.modalities.join(", ")}.`,
+      `Search depth: ${plan.searchDepth}. Website target=${plan.targetWebResults}; image target=${plan.targetImageResults}.`,
+    ],
   };
 };
 
 export const searchNode = async (state: AgentStateType) => {
-  const webHits = await searchService.searchPlan(state.plan!);
+  const plan = state.plan!;
+  const webTarget = Math.max(0, plan.targetWebResults - (plan.searchDepth === "extra_deep" ? 60 : 24));
+  const [duckHits, pubMedHits] = await Promise.all([
+    duckSearchService.searchPlan({ ...plan, targetWebResults: webTarget }),
+    pubMedSearchService.searchPlan(plan),
+  ]);
+  const webHits = mergeAndPrioritizeHits([...duckHits, ...pubMedHits], plan.targetWebResults);
+  await writeFile(path.join(state.outputDir, "web-hits.json"), JSON.stringify(webHits, null, 2), "utf8");
   return {
     webHits,
-    notes: [...state.notes, `Collected ${webHits.length} deduplicated web results across all search families.`],
+    notes: [
+      ...state.notes,
+      `Collected ${webHits.length} deduplicated web results against a target of ${plan.targetWebResults}.`,
+      `Search mix included open web discovery plus direct PubMed literature retrieval.`,
+    ],
   };
 };
 
 export const fetchNode = async (state: AgentStateType) => {
-  const selected = state.webHits.slice(0, config.maxFetchedDocs);
+  const selected = state.webHits.slice(0, Math.min(state.plan!.targetWebResults, config.maxFetchedDocs));
   const documents = await Promise.all(selected.map((hit) => fetchDocument(hit)));
   await writeFile(path.join(state.outputDir, "sources.json"), JSON.stringify(documents, null, 2), "utf8");
   return {
     documents,
-    notes: [...state.notes, `Fetched ${documents.length} source documents for extraction.`],
+    notes: [...state.notes, `Fetched ${documents.length} source documents for extraction and comparison.`],
   };
 };
 
 export const extractNode = async (state: AgentStateType) => {
   const claims: ExtractedClaim[] = [];
   for (const doc of state.documents) {
-    const heuristic = heuristicClaimsFromDocument(state.input.query, doc, state.plan!.modalities);
+    const heuristic = heuristicClaimsFromDocument(state.plan!.normalizedQuery, doc, state.plan!.modalities);
     claims.push(...heuristic);
     try {
-      const llmClaims = await enrichClaimsWithLlm(state.input.query, doc);
+      const llmClaims = await enrichClaimsWithLlm(state.plan!.normalizedQuery, doc);
       for (const claim of llmClaims) {
         if (!claims.some((existing) => existing.remedyCanonical === claim.remedyCanonical && existing.sourceUrl === claim.sourceUrl)) {
           claims.push(claim);
         }
       }
     } catch {
-      // ignore llm extraction errors; heuristic path remains available
+      // heuristic extraction remains the baseline path
     }
   }
 
@@ -273,7 +352,7 @@ export const extractNode = async (state: AgentStateType) => {
   await writeFile(path.join(state.outputDir, "claims.json"), JSON.stringify(filtered, null, 2), "utf8");
   return {
     claims: filtered,
-    notes: [...state.notes, `Extracted ${filtered.length} remedy claims from the research corpus.`],
+    notes: [...state.notes, `Extracted ${filtered.length} remedy mentions from the research corpus.`],
   };
 };
 
@@ -282,7 +361,11 @@ export const rankNode = async (state: AgentStateType) => {
   return {
     primaryRanked: primary,
     secondaryRanked: secondary,
-    notes: [...state.notes, `Ranked ${primary.length} primary remedies and ${secondary.length} secondary top matches.`],
+    notes: [
+      ...state.notes,
+      `Ranked ${primary.length} primary remedies and ${secondary.length} secondary top matches.`,
+      `Ranking favors reliability and likely usefulness described across independent sources rather than cure claims.`,
+    ],
   };
 };
 
@@ -307,8 +390,9 @@ const buildImageQueriesForRemedy = (query: string, remedy: RankedRemedy): string
 export const imageNode = async (state: AgentStateType) => {
   const withImages: RankedRemedy[] = [];
   for (const remedy of state.primaryRanked) {
-    const imageQueries = buildImageQueriesForRemedy(state.input.query, remedy);
-    const searched = await Promise.all(imageQueries.map((query) => searchService.searchRemedyImages(query)));
+    const imageQueries = buildImageQueriesForRemedy(state.plan!.normalizedQuery, remedy);
+    const perQueryTarget = Math.max(20, Math.ceil(state.plan!.targetImageResults / imageQueries.length));
+    const searched = await Promise.all(imageQueries.map((query) => duckSearchService.searchRemedyImages(query, perQueryTarget)));
     const supportingDocImages = remedy.supportingClaims.flatMap((claim) => {
       const doc = state.documents.find((candidate) => candidate.url === claim.sourceUrl);
       return (doc?.images ?? []).filter((image) => {
@@ -316,12 +400,17 @@ export const imageNode = async (state: AgentStateType) => {
         return [claim.remedyCanonical, ...claim.remedyAliases].some((alias) => corpus.includes(alias.toLowerCase()));
       });
     });
-    const bestImage = await chooseBestImage(remedy, [...supportingDocImages, ...searched.flat()]);
+    const candidatePool = [...supportingDocImages, ...searched.flat()].slice(0, state.plan!.targetImageResults);
+    const bestImage = await chooseBestImage(remedy, candidatePool);
     withImages.push({ ...remedy, image: bestImage });
   }
   return {
     primaryRanked: withImages,
-    notes: [...state.notes, "Image ranking combined source authority, lexical max-match, and optional vision verification."],
+    notes: [
+      ...state.notes,
+      `Image ranking targeted up to ${state.plan!.targetImageResults} candidates per remedy when available.`,
+      "Image ranking combined reliable-source preference, lexical max-match, reference overlap, and optional vision verification.",
+    ],
   };
 };
 
@@ -332,13 +421,14 @@ export const reportNode = async (state: AgentStateType) => {
     query: state.input.query,
     status: (state.status === "out_of_scope" ? "out_of_scope" : "completed") as "completed" | "out_of_scope",
     disclaimer:
-      "This agent provides complementary-health information for non-emergency queries. Primary results are evidence-first. The secondary appendix reflects top web matches only and can overstate repeated low-quality content.",
+      "This agent summarizes the most reliable and potentially useful supportive options described across web and literature sources for the query. It does not claim cures, diagnosis, or guaranteed outcomes. Primary results are evidence-first. The secondary appendix reflects top web matches only and can overstate repeated low-quality content.",
     methodology: [
-      "Expanded the user query into official, literature, hospital, traditional, contradiction, and image-search families.",
+      `Expanded the query into multiple search families and targeted up to ${state.plan?.targetWebResults ?? 0} website links and ${state.plan?.targetImageResults ?? 0} image candidates per remedy when available.`,
+      "Used open web discovery for official, hospital, traditional, and contradiction-search families, plus direct PubMed literature retrieval.",
       "Retrieved pages with direct fetch first and a browser fallback when needed.",
-      "Extracted remedy claims with heuristics and optional structured LLM extraction.",
-      "Ranked remedies by evidence quality, independent source families, authority, safety profile, and query specificity.",
-      "Ranked images by reliable source authority, textual max-match, and optional vision verification.",
+      "Extracted remedy mentions with heuristics and optional structured LLM extraction.",
+      "Ranked options by evidence quality, independent source families, authority, safety profile, and query specificity.",
+      "Ranked images by reliable source authority, textual max-match, consistency with extracted descriptions, and optional vision verification.",
     ],
     primaryResults: state.status === "out_of_scope" ? [] : state.primaryRanked,
     secondaryTopMatches: state.status === "out_of_scope" ? [] : state.secondaryRanked,
@@ -350,6 +440,6 @@ export const reportNode = async (state: AgentStateType) => {
   return {
     report,
     artifact,
-    status: state.status === "out_of_scope" ? "out_of_scope" as const : "completed" as const,
+    status: state.status === "out_of_scope" ? ("out_of_scope" as const) : ("completed" as const),
   };
 };

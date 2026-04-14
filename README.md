@@ -1,15 +1,36 @@
 # Complementary Health Agent (TypeScript + LangGraph)
 
-Long-running TypeScript agent for complementary-health information queries focused on Ayurvedic, yogic, pranayama, acupressure, mudra, and related natural-support remedies.
+Long-running TypeScript agent for complementary-health information queries focused on Ayurvedic, yogic, pranayama, acupressure, mudra, and related supportive natural practices.
+
+## Philosophy
+
+The agent is built to help users get the **best possible guidance from extensive web research** without making cure claims.
+
+- It looks for the **most reliable and potentially useful supportive options** described across the web and literature for the user’s query.
+- It does **not** claim diagnosis, cure, or guaranteed outcomes.
+- It favors **independent source agreement + stronger evidence + better source authority**.
+- It also includes a **secondary top-match appendix** for the user’s preferred “maximum match” philosophy, but clearly labels it as non-primary.
+- For images, it prefers **reliable source + maximum match + extracted-description consistency**.
+
+## Search depth
+
+- **Default:** target up to **100 website links** and up to **100 image candidates per remedy**.
+- **If the prompt explicitly asks for extra deep search:** target up to **250 website links** and up to **250 image candidates per remedy**.
+
+Examples of phrases that trigger extra-deep mode:
+- `perform extra deep search`
+- `extra deep search`
+- `extra deep research`
 
 ## What it does
 
 - Plans deep search across official, literature, hospital, traditional, contradiction, and image-search families
+- Uses open-web discovery together with direct **PubMed** literature retrieval
 - Retrieves web pages with `fetch()` first and Playwright fallback
 - Extracts remedy claims with heuristics and optional structured LLM extraction
 - Produces **primary evidence-first ranking**
 - Produces **secondary top-match / maximum-occurrence appendix** with disclaimer
-- Searches and ranks up to 100 image candidates per remedy using reliable-source + max-match logic, with optional vision verification
+- Searches and ranks large image candidate pools using reliable-source + max-match logic, with optional vision verification
 - Exports HTML + JSON and attempts PDF generation
 
 ## Out-of-scope behavior
@@ -25,6 +46,7 @@ It does not add tense or alarming language.
 - TypeScript
 - LangGraph.js
 - DuckDuckGo search + image search
+- PubMed E-utilities
 - Cheerio + Playwright retrieval
 - Optional OpenAI-compatible text/vision models
 
@@ -34,6 +56,12 @@ It does not add tense or alarming language.
 npm install
 cp .env.example .env
 npm run cli -- "best acupressure points for anxiety"
+```
+
+Example extra-deep run:
+
+```bash
+npm run cli -- "perform extra deep search for effective hand mudras for stress"
 ```
 
 The run writes artifacts under `outputs/...`.
@@ -71,16 +99,16 @@ This works well with self-hosted OSS models exposed through an OpenAI-compatible
 
 ## Output sections
 
-- Primary evidence-ranked remedies
-- Image for each primary remedy when available
+- Primary evidence-ranked supportive options
+- Image for each primary result when available
 - Methodology appendix
 - Secondary top-match appendix with disclaimer
 
 ## Important implementation notes
 
 - Primary ranking is evidence-first.
-- Secondary ranking preserves your “maximum match” philosophy but is clearly marked as non-primary.
-- For images, the agent combines source authority, lexical match, reference-description overlap, and optional vision verification.
+- Secondary ranking preserves the “maximum match” philosophy but is clearly marked as non-primary.
+- For images, the agent combines source authority, lexical match, extracted-description overlap, and optional vision verification.
 - If no high-confidence image is found, the report leaves the image unfilled instead of forcing a weak one.
 
 ## Build

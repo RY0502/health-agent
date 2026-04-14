@@ -23,6 +23,8 @@ export type EvidenceType =
   | "expert_patient_education"
   | "open_web";
 
+export type SearchDepth = "default" | "extra_deep";
+
 export interface AgentInput {
   query: string;
   topN?: number;
@@ -31,7 +33,11 @@ export interface AgentInput {
 }
 
 export interface SearchPlan {
+  originalQuery: string;
   normalizedQuery: string;
+  searchDepth: SearchDepth;
+  targetWebResults: number;
+  targetImageResults: number;
   modalities: Modality[];
   officialQueries: string[];
   literatureQueries: string[];
