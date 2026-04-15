@@ -127,7 +127,7 @@ const buildPlan = (query: string): SearchPlan => {
     "{q} site:nih.gov",
     "{q} site:who.int",
     "{q} site:fda.gov",
-  ]).slice(0, searchDepth === "extra_deep" ? 30 : 14);
+  ]).slice(0, searchDepth === "extra_deep" ? 18 : 4);
 
   const literatureQueries = buildTemplateQueries(normalizedQuery, keyTerms, [
     "{q} systematic review",
@@ -135,7 +135,7 @@ const buildPlan = (query: string): SearchPlan => {
     "{q} randomized trial",
     "{q} pubmed",
     "{q} integrative medicine review",
-  ]).slice(0, searchDepth === "extra_deep" ? 24 : 10);
+  ]).slice(0, searchDepth === "extra_deep" ? 12 : 4);
 
   const hospitalQueries = buildTemplateQueries(normalizedQuery, keyTerms, [
     "{q} hospital patient education",
@@ -143,21 +143,21 @@ const buildPlan = (query: string): SearchPlan => {
     "{q} site:.edu",
     "{q} clinic guidance",
     "{q} site:mayo.edu",
-  ]).slice(0, searchDepth === "extra_deep" ? 24 : 10);
+  ]).slice(0, searchDepth === "extra_deep" ? 12 : 4);
 
   const traditionalQueries = buildTemplateQueries(normalizedQuery, keyTerms, [
     "{q} traditional literature",
     "{q} ayurveda yoga classical text",
     "{q} complementary medicine review",
     `{q} ${modalityTerms} classical practice`,
-  ]).slice(0, searchDepth === "extra_deep" ? 24 : 10);
+  ]).slice(0, searchDepth === "extra_deep" ? 12 : 4);
 
   const contradictionQueries = buildTemplateQueries(normalizedQuery, keyTerms, [
     "{q} contraindications",
     "{q} adverse effects",
     "{q} evidence insufficient",
     "{q} safety notes",
-  ]).slice(0, searchDepth === "extra_deep" ? 20 : 8);
+  ]).slice(0, searchDepth === "extra_deep" ? 10 : 3);
 
   const imageQueries = buildTemplateQueries(normalizedQuery, keyTerms, [
     "{q} diagram",
@@ -165,7 +165,7 @@ const buildPlan = (query: string): SearchPlan => {
     "{q} point location",
     "{q} hand position",
     "{q} educational image",
-  ]).slice(0, searchDepth === "extra_deep" ? 24 : 10);
+  ]).slice(0, searchDepth === "extra_deep" ? 12 : 4);
 
   return {
     originalQuery: query.trim(),
@@ -233,6 +233,22 @@ const enrichClaimsWithLlm = async (query: string, doc: SourceDocument): Promise<
     occurrenceWeight: doc.sourceTier === "official" ? 1.2 : doc.sourceTier === "literature" ? 1.1 : 1,
     querySpecificity: clamp(overlapScore(`${claim.claimedBenefit} ${claim.instructionSummary}`, query)),
   }));
+};
+
+
+const buildTargetedRemedyQueries = (plan: SearchPlan): string[] => {
+  const modalityMatches = REMEDY_LEXICON.filter((item) => plan.modalities.includes(item.modality));
+  const coreNeed = plan.requiredKeywords.join(" ") || plan.normalizedQuery;
+  const queries: string[] = [];
+
+  for (const item of modalityMatches.slice(0, plan.searchDepth === "extra_deep" ? 18 : 10)) {
+    queries.push(`${item.canonical} ${coreNeed}`);
+    for (const alias of item.aliases.slice(0, 2)) {
+      queries.push(`${alias} ${coreNeed}`);
+    }
+  }
+
+  return unique(queries);
 };
 
 const mergeAndPrioritizeHits = (hits: WebSearchHit[], limit: number): WebSearchHit[] => {
@@ -309,20 +325,33 @@ export const searchNode = async (state: AgentStateType) => {
     duckSearchService.searchPlan({ ...plan, targetWebResults: webTarget }),
     pubMedSearchService.searchPlan(plan),
   ]);
-  const webHits = mergeAndPrioritizeHits([...duckHits, ...pubMedHits], plan.targetWebResults);
+
+  let webHits = mergeAndPrioritizeHits([...duckHits, ...pubMedHits], plan.targetWebResults);
+
+  if (webHits.length < Math.min(12, plan.targetWebResults)) {
+    const targetedQueries = buildTargetedRemedyQueries(plan);
+    const targetedHits = await duckSearchService.searchQueries(
+      targetedQueries,
+      Math.max(12, Math.min(40, plan.targetWebResults - webHits.length)),
+      plan.searchDepth,
+    );
+    webHits = mergeAndPrioritizeHits([...webHits, ...targetedHits], plan.targetWebResults);
+  }
+
   await writeFile(path.join(state.outputDir, "web-hits.json"), JSON.stringify(webHits, null, 2), "utf8");
   return {
     webHits,
     notes: [
       ...state.notes,
       `Collected ${webHits.length} deduplicated web results against a target of ${plan.targetWebResults}.`,
-      `Search mix included open web discovery plus direct PubMed literature retrieval.`,
+      `Search mix included open web discovery, direct PubMed literature retrieval, and targeted remedy queries when recall was low.`,
     ],
   };
 };
 
 export const fetchNode = async (state: AgentStateType) => {
-  const selected = state.webHits.slice(0, Math.min(state.plan!.targetWebResults, config.maxFetchedDocs));
+  const fetchLimit = state.plan!.searchDepth === "extra_deep" ? 60 : 30;
+  const selected = state.webHits.slice(0, Math.min(state.plan!.targetWebResults, config.maxFetchedDocs, fetchLimit));
   const documents = await Promise.all(selected.map((hit) => fetchDocument(hit)));
   await writeFile(path.join(state.outputDir, "sources.json"), JSON.stringify(documents, null, 2), "utf8");
   return {
@@ -391,8 +420,6 @@ export const imageNode = async (state: AgentStateType) => {
   const withImages: RankedRemedy[] = [];
   for (const remedy of state.primaryRanked) {
     const imageQueries = buildImageQueriesForRemedy(state.plan!.normalizedQuery, remedy);
-    const perQueryTarget = Math.max(20, Math.ceil(state.plan!.targetImageResults / imageQueries.length));
-    const searched = await Promise.all(imageQueries.map((query) => duckSearchService.searchRemedyImages(query, perQueryTarget)));
     const supportingDocImages = remedy.supportingClaims.flatMap((claim) => {
       const doc = state.documents.find((candidate) => candidate.url === claim.sourceUrl);
       return (doc?.images ?? []).filter((image) => {
@@ -400,15 +427,24 @@ export const imageNode = async (state: AgentStateType) => {
         return [claim.remedyCanonical, ...claim.remedyAliases].some((alias) => corpus.includes(alias.toLowerCase()));
       });
     });
-    const candidatePool = [...supportingDocImages, ...searched.flat()].slice(0, state.plan!.targetImageResults);
-    const bestImage = await chooseBestImage(remedy, candidatePool);
+
+    let candidatePool = supportingDocImages.slice(0, state.plan!.targetImageResults);
+    let bestImage = await chooseBestImage(remedy, candidatePool);
+
+    if (!bestImage) {
+      const perQueryTarget = Math.max(20, Math.ceil(state.plan!.targetImageResults / imageQueries.length));
+      const searched = await Promise.all(imageQueries.map((query) => duckSearchService.searchRemedyImages(query, perQueryTarget)));
+      candidatePool = [...supportingDocImages, ...searched.flat()].slice(0, state.plan!.targetImageResults);
+      bestImage = await chooseBestImage(remedy, candidatePool);
+    }
+
     withImages.push({ ...remedy, image: bestImage });
   }
   return {
     primaryRanked: withImages,
     notes: [
       ...state.notes,
-      `Image ranking targeted up to ${state.plan!.targetImageResults} candidates per remedy when available.`,
+      `Image ranking targeted up to ${state.plan!.targetImageResults} candidates per remedy when needed.`,
       "Image ranking combined reliable-source preference, lexical max-match, reference overlap, and optional vision verification.",
     ],
   };
