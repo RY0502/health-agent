@@ -50,12 +50,25 @@ It does not add tense or alarming language.
 - Cheerio + Playwright retrieval
 - Optional OpenAI-compatible text/vision models
 
+## System requirements
+
+- Node.js **20+**
+- npm **10+**
+- internet access for search and page retrieval
+
 ## Quick start
 
 ```bash
 npm install
 cp .env.example .env
+npm run typecheck
 npm run cli -- "best acupressure points for anxiety"
+```
+
+If Playwright browser binaries were skipped during install on your system, run:
+
+```bash
+npx playwright install chromium
 ```
 
 Example extra-deep run:

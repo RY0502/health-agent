@@ -3,12 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.11.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/index.ts",
     "cli": "tsx src/index.ts",
-    "server": "tsx src/server.ts"
+    "server": "tsx src/server.ts",
+    "start": "tsx src/server.ts",
+    "postinstall": "playwright install chromium || true"
   },
   "dependencies": {
     "@langchain/core": "^1.1.39",
