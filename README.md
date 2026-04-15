@@ -11,6 +11,7 @@ The agent is built to help users get the **best possible guidance from extensive
 - It favors **independent source agreement + stronger evidence + better source authority**.
 - It also includes a **secondary top-match appendix** for the user’s preferred “maximum match” philosophy, but clearly labels it as non-primary.
 - For images, it prefers **reliable source + maximum match + extracted-description consistency**.
+- It now includes an optional **transformers.js vision check** using Hugging Face models to penalize obviously low-value image candidates during ranking.
 
 ## Search depth
 
@@ -49,6 +50,7 @@ It does not add tense or alarming language.
 - PubMed E-utilities
 - Cheerio + Playwright retrieval
 - Optional OpenAI-compatible text/vision models
+- Optional Hugging Face `transformers.js` local image sanity scoring
 
 ## System requirements
 
@@ -110,6 +112,16 @@ VISION_MODEL=your-vision-model
 
 This works well with self-hosted OSS models exposed through an OpenAI-compatible API.
 
+### Optional transformers.js image sanity scoring
+The image pipeline can also use a local Hugging Face `transformers.js` model to penalize clearly low-value candidates (for example tiny icons, logos, or unrelated graphics) during image ranking. This check is available but disabled by default so the standard workflow remains lightweight and reliable on fresh systems.
+
+```env
+ENABLE_TRANSFORMERS_IMAGE_CHECK=true
+HF_TRANSFORMERS_CACHE=
+```
+
+The current implementation uses `Xenova/vit-base-patch16-224` as the reference model for this additional image sanity pass.
+
 ## Output sections
 
 - Primary evidence-ranked supportive options
@@ -120,8 +132,9 @@ This works well with self-hosted OSS models exposed through an OpenAI-compatible
 ## Important implementation notes
 
 - Primary ranking is evidence-first.
+- Hardening and targeted-recall fallbacks are applied by default across all supported query types, not only a single modality.
 - Secondary ranking preserves the “maximum match” philosophy but is clearly marked as non-primary.
-- For images, the agent combines source authority, lexical match, extracted-description overlap, and optional vision verification.
+- For images, the agent combines source authority, lexical match, extracted-description overlap, optional OpenAI-compatible vision verification, and optional transformers.js image sanity scoring.
 - If no high-confidence image is found, the report leaves the image unfilled instead of forcing a weak one.
 
 ## Build

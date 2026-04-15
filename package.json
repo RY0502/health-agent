@@ -26,6 +26,7 @@
     "duck-duck-scrape": "^2.2.7",
     "express": "^5.1.0",
     "playwright": "^1.55.0",
+    "@huggingface/transformers": "^3.8.1",
     "sanitize-html": "^2.17.0",
     "slugify": "^1.6.6",
     "zod": "^4.1.12"
