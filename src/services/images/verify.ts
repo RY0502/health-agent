@@ -2,7 +2,6 @@ import type { ImageCandidate, RankedRemedy, VerifiedImage } from "../../types.js
 import { overlapScore, shortText, unique } from "../../utils/text.js";
 import { domainAuthority } from "../retrieval/fetch.js";
 import { verifyImageWithVision, visionAvailable } from "../llm.js";
-import { runTransformersImageCheck } from "./transformersVision.js";
 
 const dedupeCandidates = (candidates: ImageCandidate[]): ImageCandidate[] => {
   const map = new Map<string, ImageCandidate>();
@@ -45,21 +44,8 @@ export const chooseBestImage = async (
     const noisePenalty = obviousNoise.test(`${candidate.title} ${candidate.altText ?? ""} ${candidate.imageUrl}`) ? 0.35 : 0;
 
     let visionScore = 0;
-    let transformersScore = 0;
     let method: VerifiedImage["verificationMethod"] = "heuristic";
     let explanation = `authority=${authority.toFixed(2)} lexical=${lexical.toFixed(2)} reference=${referenceOverlap.toFixed(2)} noisePenalty=${noisePenalty.toFixed(2)}`;
-
-    if (scored.length < 8 && /^https?:\/\//.test(candidate.imageUrl)) {
-      try {
-        const tfCheck = await runTransformersImageCheck(candidate.imageUrl);
-        if (tfCheck) {
-          transformersScore = tfCheck.score * 0.12;
-          explanation = `${tfCheck.explanation} | ${explanation}`;
-        }
-      } catch {
-        // keep heuristic only
-      }
-    }
 
     if (visionAvailable() && /^https?:\/\//.test(candidate.imageUrl)) {
       try {
@@ -75,7 +61,7 @@ export const chooseBestImage = async (
     }
 
     const maxMatch = Math.max(lexical, referenceOverlap);
-    const score = 0.35 * authority + 0.25 * lexical + 0.16 * referenceOverlap + dimensionScore + licenseScore + visionScore + transformersScore - noisePenalty;
+    const score = 0.35 * authority + 0.25 * lexical + 0.16 * referenceOverlap + dimensionScore + licenseScore + visionScore - noisePenalty;
     scored.push({ candidate, score, authority, maxMatch, explanation, method });
   }
 

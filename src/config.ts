@@ -12,10 +12,12 @@ export interface AgentConfig {
   maxImageCandidatesPerRemedy: number;
   outputRoot: string;
   usePlaywrightFallback: boolean;
-  openAiApiKey?: string;
-  openAiBaseUrl?: string;
-  textModel?: string;
-  visionModel?: string;
+  hfToken?: string;
+  hfBaseUrl: string;
+  hfTextModel?: string;
+  hfVisionModel?: string;
+  enableHfTextReasoning: boolean;
+  enableHfVisionReasoning: boolean;
 }
 
 const numberFromEnv = (key: string, fallback: number) => {
@@ -40,8 +42,10 @@ export const config: AgentConfig = {
   maxImageCandidatesPerRemedy: numberFromEnv("MAX_IMAGE_CANDIDATES_PER_REMEDY", 250),
   outputRoot: process.env.OUTPUT_ROOT ?? path.resolve(process.cwd(), "outputs"),
   usePlaywrightFallback: boolFromEnv("USE_PLAYWRIGHT_FALLBACK", true),
-  openAiApiKey: process.env.OPENAI_API_KEY,
-  openAiBaseUrl: process.env.OPENAI_BASE_URL,
-  textModel: process.env.TEXT_MODEL ?? process.env.OPENAI_MODEL,
-  visionModel: process.env.VISION_MODEL,
+  hfToken: process.env.HF_TOKEN,
+  hfBaseUrl: process.env.HF_BASE_URL ?? "https://router.huggingface.co/v1",
+  hfTextModel: process.env.HF_TEXT_MODEL,
+  hfVisionModel: process.env.HF_VISION_MODEL,
+  enableHfTextReasoning: boolFromEnv("ENABLE_HF_TEXT_REASONING", true),
+  enableHfVisionReasoning: boolFromEnv("ENABLE_HF_VISION_REASONING", true),
 };

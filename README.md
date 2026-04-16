@@ -11,7 +11,7 @@ The agent is built to help users get the **best possible guidance from extensive
 - It favors **independent source agreement + stronger evidence + better source authority**.
 - It also includes a **secondary top-match appendix** for the user’s preferred “maximum match” philosophy, but clearly labels it as non-primary.
 - For images, it prefers **reliable source + maximum match + extracted-description consistency**.
-- It now includes an optional **transformers.js vision check** using Hugging Face models to penalize obviously low-value image candidates during ranking.
+- It now includes optional **Hugging Face Inference API** text and vision reasoning on shortlisted pages and image candidates to improve extraction and image verification without using LLMs for every crawled source.
 
 ## Search depth
 
@@ -49,8 +49,7 @@ It does not add tense or alarming language.
 - DuckDuckGo search + image search
 - PubMed E-utilities
 - Cheerio + Playwright retrieval
-- Optional OpenAI-compatible text/vision models
-- Optional Hugging Face `transformers.js` local image sanity scoring
+- Optional Hugging Face Inference API text/vision reasoning
 
 ## System requirements
 
@@ -100,27 +99,19 @@ curl -X POST http://localhost:3017/research \
 ### Required for baseline mode
 No model key is required for heuristic extraction.
 
-### Optional for stronger extraction and image verification
-Set an OpenAI-compatible endpoint:
+### Optional Hugging Face Inference API reasoning
+For stronger extraction and image verification, configure Hugging Face Inference API:
 
 ```env
-OPENAI_API_KEY=...
-OPENAI_BASE_URL=http://localhost:8000/v1
-TEXT_MODEL=your-text-model
-VISION_MODEL=your-vision-model
+HF_TOKEN=...
+HF_BASE_URL=https://router.huggingface.co/v1
+HF_TEXT_MODEL=Qwen/Qwen2.5-3B-Instruct
+HF_VISION_MODEL=Qwen/Qwen2.5-VL-3B-Instruct
+ENABLE_HF_TEXT_REASONING=true
+ENABLE_HF_VISION_REASONING=true
 ```
 
-This works well with self-hosted OSS models exposed through an OpenAI-compatible API.
-
-### Optional transformers.js image sanity scoring
-The image pipeline can also use a local Hugging Face `transformers.js` model to penalize clearly low-value candidates (for example tiny icons, logos, or unrelated graphics) during image ranking. This check is available but disabled by default so the standard workflow remains lightweight and reliable on fresh systems.
-
-```env
-ENABLE_TRANSFORMERS_IMAGE_CHECK=true
-HF_TRANSFORMERS_CACHE=
-```
-
-The current implementation uses `Xenova/vit-base-patch16-224` as the reference model for this additional image sanity pass.
+The code uses the heuristic/search pipeline for broad crawling and applies Hugging Face reasoning surgically on shortlisted pages and image candidates.
 
 ## Output sections
 
@@ -134,7 +125,7 @@ The current implementation uses `Xenova/vit-base-patch16-224` as the reference m
 - Primary ranking is evidence-first.
 - Hardening and targeted-recall fallbacks are applied by default across all supported query types, not only a single modality.
 - Secondary ranking preserves the “maximum match” philosophy but is clearly marked as non-primary.
-- For images, the agent combines source authority, lexical match, extracted-description overlap, optional OpenAI-compatible vision verification, and optional transformers.js image sanity scoring.
+- For images, the agent combines source authority, lexical match, extracted-description overlap, and optional Hugging Face Inference API vision verification on shortlisted candidates.
 - If no high-confidence image is found, the report leaves the image unfilled instead of forcing a weak one.
 
 ## Build

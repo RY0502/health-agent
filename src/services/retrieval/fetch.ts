@@ -132,7 +132,11 @@ const fallbackDoc = (hit: WebSearchHit): SourceDocument => ({
 
 export const fetchDocument = async (hit: WebSearchHit): Promise<SourceDocument> => {
   try {
-    const response = await fetch(hit.url, { headers: DEFAULT_HEADERS, redirect: "follow" });
+    const response = await fetch(hit.url, {
+      headers: DEFAULT_HEADERS,
+      redirect: "follow",
+      signal: AbortSignal.timeout(15_000),
+    });
     const contentType = response.headers.get("content-type") || "";
     if (!response.ok || !contentType.includes("text/html")) {
       return fallbackDoc(hit);
