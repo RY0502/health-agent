@@ -150,16 +150,18 @@ export const fetchDocument = async (hit: WebSearchHit): Promise<SourceDocument> 
 
   if (!config.usePlaywrightFallback) return fallbackDoc(hit);
 
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
-    const browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ userAgent: DEFAULT_HEADERS["user-agent"] });
     await page.goto(hit.url, { waitUntil: "domcontentloaded", timeout: 35_000 });
     const html = await page.content();
-    await browser.close();
     const doc = buildDocFromHtml(hit.url, html, hit, "playwright");
     return doc.text.length > 0 ? doc : fallbackDoc(hit);
   } catch {
     return fallbackDoc(hit);
+  } finally {
+    await browser?.close().catch(() => undefined);
   }
 };
 

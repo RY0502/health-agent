@@ -15,6 +15,7 @@
     "cli": "tsx src/index.ts",
     "server": "tsx src/server.ts",
     "start": "tsx src/server.ts",
+    "smoke:hf": "tsx src/scripts/hf-smoke.ts",
     "postinstall": "playwright install chromium || true"
   },
   "dependencies": {

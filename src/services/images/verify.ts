@@ -3,6 +3,9 @@ import { overlapScore, shortText, unique } from "../../utils/text.js";
 import { domainAuthority } from "../retrieval/fetch.js";
 import { verifyImageWithVision, visionAvailable } from "../llm.js";
 
+const MAX_CANDIDATES = 100;
+const MAX_VISION_CHECKS = 6;
+
 const dedupeCandidates = (candidates: ImageCandidate[]): ImageCandidate[] => {
   const map = new Map<string, ImageCandidate>();
   for (const item of candidates) {
@@ -11,13 +14,16 @@ const dedupeCandidates = (candidates: ImageCandidate[]): ImageCandidate[] => {
   return [...map.values()];
 };
 
-export const chooseBestImage = async (
-  remedy: RankedRemedy,
-  candidates: ImageCandidate[],
-): Promise<VerifiedImage | undefined> => {
-  const deduped = dedupeCandidates(candidates).slice(0, 100);
-  if (!deduped.length) return undefined;
+interface ScoredCandidate {
+  candidate: ImageCandidate;
+  score: number;
+  authority: number;
+  maxMatch: number;
+  explanation: string;
+  method: VerifiedImage["verificationMethod"];
+}
 
+const buildHeuristicScores = (remedy: RankedRemedy, candidates: ImageCandidate[]): { scored: ScoredCandidate[]; consensusBoost: number } => {
   const aliases = unique([
     remedy.remedyCanonical,
     ...remedy.supportingClaims.flatMap((claim) => claim.remedyAliases),
@@ -28,10 +34,10 @@ export const chooseBestImage = async (
   ].join(" ");
 
   let aliasMatchedCount = 0;
-  const scored = [] as Array<{ candidate: ImageCandidate; score: number; authority: number; maxMatch: number; explanation: string; method: VerifiedImage["verificationMethod"] }>;
+  const scored: ScoredCandidate[] = [];
   const obviousNoise = /favicon|logo|icon|flag|dot gov|https|agencylogo|pubmed logo/i;
 
-  for (const candidate of deduped) {
+  for (const candidate of candidates) {
     const authority = domainAuthority(candidate.sourceDomain || new URL(candidate.sourcePageUrl).hostname);
     const lexical = Math.max(
       overlapScore(aliases, `${candidate.title} ${candidate.altText ?? ""} ${candidate.sourceLabel ?? ""}`),
@@ -42,31 +48,63 @@ export const chooseBestImage = async (
     const dimensionScore = candidate.width && candidate.height ? (candidate.width >= 300 && candidate.height >= 300 ? 0.12 : 0.05) : 0.06;
     const licenseScore = /(public|creative|commons|cc)/i.test(candidate.licenseHint ?? "") ? 0.12 : 0.06;
     const noisePenalty = obviousNoise.test(`${candidate.title} ${candidate.altText ?? ""} ${candidate.imageUrl}`) ? 0.35 : 0;
-
-    let visionScore = 0;
-    let method: VerifiedImage["verificationMethod"] = "heuristic";
-    let explanation = `authority=${authority.toFixed(2)} lexical=${lexical.toFixed(2)} reference=${referenceOverlap.toFixed(2)} noisePenalty=${noisePenalty.toFixed(2)}`;
-
-    if (visionAvailable() && /^https?:\/\//.test(candidate.imageUrl)) {
-      try {
-        const verdict = await verifyImageWithVision(remedy.remedyCanonical, remedy.modality, reference, candidate);
-        if (verdict) {
-          visionScore = verdict.accuracyScore * 0.35;
-          method = "heuristic_plus_vision";
-          explanation = `${verdict.explanation} | ${explanation}`;
-        }
-      } catch {
-        // keep heuristic only
-      }
-    }
-
     const maxMatch = Math.max(lexical, referenceOverlap);
-    const score = 0.35 * authority + 0.25 * lexical + 0.16 * referenceOverlap + dimensionScore + licenseScore + visionScore - noisePenalty;
-    scored.push({ candidate, score, authority, maxMatch, explanation, method });
+    const score = 0.35 * authority + 0.25 * lexical + 0.16 * referenceOverlap + dimensionScore + licenseScore - noisePenalty;
+
+    scored.push({
+      candidate,
+      score,
+      authority,
+      maxMatch,
+      explanation: `authority=${authority.toFixed(2)} lexical=${lexical.toFixed(2)} reference=${referenceOverlap.toFixed(2)} noisePenalty=${noisePenalty.toFixed(2)}`,
+      method: "heuristic",
+    });
   }
 
-  const consensusBoost = Math.min(0.12, aliasMatchedCount / 40);
+  return {
+    scored,
+    consensusBoost: Math.min(0.12, aliasMatchedCount / 40),
+  };
+};
+
+const applyVisionChecks = async (remedy: RankedRemedy, scored: ScoredCandidate[]): Promise<void> => {
+  if (!visionAvailable()) return;
+
+  const reference = [
+    remedy.instructionSummary,
+    ...remedy.supportingClaims.map((claim) => claim.rationaleSummary),
+  ].join(" ");
+
+  const shortlist = [...scored]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.min(MAX_VISION_CHECKS, scored.length));
+
+  for (const item of shortlist) {
+    if (!/^https?:\/\//.test(item.candidate.imageUrl)) continue;
+
+    try {
+      const verdict = await verifyImageWithVision(remedy.remedyCanonical, remedy.modality, reference, item.candidate);
+      if (!verdict) continue;
+      item.score += verdict.accuracyScore * 0.35;
+      item.method = "heuristic_plus_vision";
+      item.explanation = `${verdict.explanation} | ${item.explanation}`;
+    } catch {
+      // keep heuristic-only result
+    }
+  }
+};
+
+export const chooseBestImage = async (
+  remedy: RankedRemedy,
+  candidates: ImageCandidate[],
+): Promise<VerifiedImage | undefined> => {
+  const deduped = dedupeCandidates(candidates).slice(0, MAX_CANDIDATES);
+  if (!deduped.length) return undefined;
+
+  const { scored, consensusBoost } = buildHeuristicScores(remedy, deduped);
+  await applyVisionChecks(remedy, scored);
   scored.sort((a, b) => b.score - a.score);
+
   const best = scored[0];
   if (!best) return undefined;
 

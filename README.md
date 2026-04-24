@@ -105,13 +105,19 @@ For stronger extraction and image verification, configure Hugging Face Inference
 ```env
 HF_TOKEN=...
 HF_BASE_URL=https://router.huggingface.co/v1
-HF_TEXT_MODEL=Qwen/Qwen2.5-3B-Instruct
-HF_VISION_MODEL=Qwen/Qwen2.5-VL-3B-Instruct
+HF_TEXT_MODEL=Qwen/Qwen2.5-72B-Instruct
+HF_VISION_MODEL=meta-llama/Llama-4-Scout-17B-16E-Instruct
 ENABLE_HF_TEXT_REASONING=true
 ENABLE_HF_VISION_REASONING=true
 ```
 
-The code uses the heuristic/search pipeline for broad crawling and applies Hugging Face reasoning surgically on shortlisted pages and image candidates.
+The code uses the heuristic/search pipeline for broad crawling and applies Hugging Face reasoning surgically on shortlisted pages and image candidates. If a configured router model is unavailable for the enabled providers on your Hugging Face account, the runtime now falls back to a compatible live model exposed by the router.
+
+To validate the live Hugging Face path directly:
+
+```bash
+npm run smoke:hf
+```
 
 ## Output sections
 

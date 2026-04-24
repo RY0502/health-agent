@@ -44,8 +44,8 @@ export const config: AgentConfig = {
   usePlaywrightFallback: boolFromEnv("USE_PLAYWRIGHT_FALLBACK", true),
   hfToken: process.env.HF_TOKEN,
   hfBaseUrl: process.env.HF_BASE_URL ?? "https://router.huggingface.co/v1",
-  hfTextModel: process.env.HF_TEXT_MODEL,
-  hfVisionModel: process.env.HF_VISION_MODEL,
+  hfTextModel: process.env.HF_TEXT_MODEL ?? "Qwen/Qwen2.5-72B-Instruct",
+  hfVisionModel: process.env.HF_VISION_MODEL ?? "meta-llama/Llama-4-Scout-17B-16E-Instruct",
   enableHfTextReasoning: boolFromEnv("ENABLE_HF_TEXT_REASONING", true),
   enableHfVisionReasoning: boolFromEnv("ENABLE_HF_VISION_REASONING", true),
 };

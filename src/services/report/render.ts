@@ -86,15 +86,17 @@ export const writeReportArtifacts = async (outputDir: string, payload: ReportPay
   await fs.writeFile(jsonPath, JSON.stringify(payload, null, 2), "utf8");
 
   let actualPdfPath: string | undefined;
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
-    const browser = await chromium.launch({ headless: true });
+    browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "domcontentloaded" });
     await page.pdf({ path: pdfPath, format: "A4", printBackground: true, margin: { top: "20px", right: "20px", bottom: "20px", left: "20px" } });
-    await browser.close();
     actualPdfPath = pdfPath;
   } catch {
     actualPdfPath = undefined;
+  } finally {
+    await browser?.close().catch(() => undefined);
   }
 
   return {
