@@ -10,6 +10,7 @@ import {
 } from "duck-duck-scrape";
 import { config } from "../../config.js";
 import type { ImageCandidate, SearchPlan, SourceTier, WebSearchHit } from "../../types.js";
+import { logWarn } from "../../utils/log.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -56,6 +57,9 @@ const uniqueQueries = (queries: string[]): string[] => [...new Set(queries.map((
 const isAnomalyError = (error: unknown): boolean =>
   error instanceof Error && /anomaly|too quickly|rate/i.test(error.message);
 
+const looksLikeLiteChallenge = (html: string): boolean =>
+  /anomaly\.js|challenge-form|bots use DuckDuckGo too/i.test(html);
+
 const execFileAsync = promisify(execFile);
 
 export class DuckDuckGoSearchService {
@@ -70,6 +74,10 @@ export class DuckDuckGoSearchService {
         "    sys.stdout.write(r.read().decode('utf-8','ignore'))",
       ].join("\n");
       const { stdout } = await execFileAsync("python3", ["-c", py, query], { maxBuffer: 5 * 1024 * 1024 });
+      if (looksLikeLiteChallenge(stdout)) {
+        logWarn("search:duckduckgo", "DuckDuckGo lite returned a challenge page", { query });
+        return [];
+      }
       const $ = cheerio.load(stdout);
       const hits: SearchResult[] = [];
 
@@ -97,7 +105,11 @@ export class DuckDuckGoSearchService {
       });
 
       return hits;
-    } catch {
+    } catch (error) {
+      logWarn("search:duckduckgo", "DuckDuckGo lite search failed", {
+        query,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return [];
     }
   }
@@ -115,7 +127,17 @@ export class DuckDuckGoSearchService {
           });
           if (result.results.length) return result.results;
         } catch (error) {
-          if (!isAnomalyError(error)) break;
+          if (!isAnomalyError(error)) {
+            logWarn("search:duckduckgo", "Primary DuckDuckGo search failed", {
+              query: variant,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            break;
+          }
+          logWarn("search:duckduckgo", "DuckDuckGo search reported anomaly/rate limit", {
+            query: variant,
+            error: error instanceof Error ? error.message : String(error),
+          });
           await sleep(backoffMs);
           backoffMs *= 2;
         }
@@ -181,7 +203,19 @@ export class DuckDuckGoSearchService {
             vqd,
           });
         } catch (error) {
-          if (!isAnomalyError(error)) break;
+          if (!isAnomalyError(error)) {
+            logWarn("search:duckduckgo", "DuckDuckGo image search failed", {
+              query: variant,
+              offset,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            break;
+          }
+          logWarn("search:duckduckgo", "DuckDuckGo image search reported anomaly/rate limit", {
+            query: variant,
+            offset,
+            error: error instanceof Error ? error.message : String(error),
+          });
           await sleep(backoffMs);
           backoffMs *= 2;
         }

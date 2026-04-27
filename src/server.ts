@@ -1,6 +1,7 @@
 import express from "express";
 import { buildAgentGraph } from "./agent/graph.js";
 import { config } from "./config.js";
+import { logError, logInfo } from "./utils/log.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -17,6 +18,7 @@ app.post("/research", async (req, res) => {
     return;
   }
 
+  logInfo("server", "Received research request", { query, topN });
   try {
     const graph = buildAgentGraph();
     const result = await graph.invoke({
@@ -28,12 +30,21 @@ app.post("/research", async (req, res) => {
       },
     });
 
+    logInfo("server", "Completed research request", {
+      query,
+      status: result.status,
+      outputDir: result.artifact?.outputDir,
+    });
     res.json({
       status: result.status,
       report: result.report,
       artifact: result.artifact,
     });
   } catch (error) {
+    logError("server", "Research request failed", {
+      query,
+      error: error instanceof Error ? error.stack ?? error.message : "unknown error",
+    });
     res.status(500).json({
       error: error instanceof Error ? error.message : "unknown error",
     });
@@ -41,5 +52,5 @@ app.post("/research", async (req, res) => {
 });
 
 app.listen(config.port, () => {
-  console.log(`complementary-health-agent listening on :${config.port}`);
+  logInfo("server", `complementary-health-agent listening on :${config.port}`);
 });

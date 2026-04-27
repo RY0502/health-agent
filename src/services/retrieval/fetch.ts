@@ -4,6 +4,7 @@ import { chromium } from "playwright";
 import type { ImageCandidate, SourceDocument, SourceTier, WebSearchHit, EvidenceType } from "../../types.js";
 import { normalizeWhitespace, shortText } from "../../utils/text.js";
 import { config } from "../../config.js";
+import { logWarn } from "../../utils/log.js";
 
 const DEFAULT_HEADERS = {
   "user-agent":
@@ -139,13 +140,21 @@ export const fetchDocument = async (hit: WebSearchHit): Promise<SourceDocument> 
     });
     const contentType = response.headers.get("content-type") || "";
     if (!response.ok || !contentType.includes("text/html")) {
+      logWarn("retrieval", "Falling back after non-HTML or non-OK fetch response", {
+        url: hit.url,
+        status: response.status,
+        contentType,
+      });
       return fallbackDoc(hit);
     }
     const html = await response.text();
     const doc = buildDocFromHtml(hit.url, html, hit, "fetch");
     if (doc.text.length > 1200 || !config.usePlaywrightFallback) return doc;
-  } catch {
-    // fall through to playwright
+  } catch (error) {
+    logWarn("retrieval", "Direct fetch failed; trying Playwright fallback", {
+      url: hit.url,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   if (!config.usePlaywrightFallback) return fallbackDoc(hit);
@@ -158,7 +167,11 @@ export const fetchDocument = async (hit: WebSearchHit): Promise<SourceDocument> 
     const html = await page.content();
     const doc = buildDocFromHtml(hit.url, html, hit, "playwright");
     return doc.text.length > 0 ? doc : fallbackDoc(hit);
-  } catch {
+  } catch (error) {
+    logWarn("retrieval", "Playwright fallback failed; using search snippet fallback", {
+      url: hit.url,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return fallbackDoc(hit);
   } finally {
     await browser?.close().catch(() => undefined);

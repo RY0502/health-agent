@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { config } from "../config.js";
+import { logWarn } from "../utils/log.js";
 import { shortText } from "../utils/text.js";
 import type { ExtractedClaim, ImageCandidate, Modality, SourceDocument, VerifiedImage } from "../types.js";
 
@@ -67,6 +68,10 @@ interface HfErrorPayload {
 let modelCatalogPromise: Promise<HfModelEntry[]> | null = null;
 let cachedTextModel: string | null = null;
 let cachedVisionModel: string | null = null;
+let hfTextDisabledReason: string | null = null;
+let hfVisionDisabledReason: string | null = null;
+let hfTextTimeoutFailures = 0;
+let hfVisionTimeoutFailures = 0;
 
 const extractFirstJsonObject = (value: string): string | null => {
   const fenced = value.match(/```json\s*([\s\S]*?)```/i);
@@ -163,6 +168,11 @@ const isModelUnsupportedError = (status: number, body: string): boolean => {
   return parsed.error?.code === "model_not_supported" || /not supported by any provider/i.test(body);
 };
 
+const isFatalHfAccessError = (status: number, body: string): boolean =>
+  status === 401 || status === 402 || /invalid username or password|depleted your monthly included credits|purchase pre-paid credits|unauthorized/i.test(body);
+
+const isTimeoutLikeError = (value: string): boolean => /timeout|timed out|aborted/i.test(value);
+
 const listSupportedModels = async (): Promise<HfModelEntry[]> => {
   if (!config.hfToken) return [];
   if (modelCatalogPromise) return modelCatalogPromise;
@@ -224,6 +234,9 @@ const callHfChat = async (
 ): Promise<string | null> => {
   if (!config.hfToken) return null;
 
+  const disabledReason = needsImage ? hfVisionDisabledReason : hfTextDisabledReason;
+  if (disabledReason) return null;
+
   const candidates = await buildModelCandidates(requestedModel, needsImage);
   if (!candidates.length) return null;
 
@@ -252,7 +265,21 @@ const callHfChat = async (
           continue;
         }
 
-        console.warn(`[HF] ${needsImage ? "vision" : "text"} request failed for model ${model}: ${shortText(body, 240)}`);
+        if (isFatalHfAccessError(response.status, body)) {
+          const reason = shortText(body, 240);
+          if (needsImage) hfVisionDisabledReason = reason;
+          else hfTextDisabledReason = reason;
+          logWarn("hf", `${needsImage ? "Vision" : "Text"} inference disabled for the rest of this run`, {
+            model,
+            reason,
+          });
+          return null;
+        }
+
+        logWarn("hf", `${needsImage ? "Vision" : "Text"} request failed`, {
+          model,
+          error: shortText(body, 240),
+        });
         return null;
       }
 
@@ -262,19 +289,54 @@ const callHfChat = async (
       const content = extractMessageContent(json.choices?.[0]?.message?.content);
       if (!content) return null;
 
-      if (needsImage) cachedVisionModel = model;
-      else cachedTextModel = model;
+      if (needsImage) {
+        cachedVisionModel = model;
+        hfVisionTimeoutFailures = 0;
+      } else {
+        cachedTextModel = model;
+        hfTextTimeoutFailures = 0;
+      }
       return content;
     } catch (error) {
-      if (error instanceof Error) {
-        console.warn(`[HF] ${needsImage ? "vision" : "text"} request failed for model ${model}: ${shortText(error.message, 240)}`);
+      const message = error instanceof Error ? shortText(error.message, 240) : String(error);
+      if (isTimeoutLikeError(message)) {
+        if (needsImage) {
+          hfVisionTimeoutFailures += 1;
+          if (hfVisionTimeoutFailures >= 2) {
+            hfVisionDisabledReason = `Repeated vision timeouts: ${message}`;
+            logWarn("hf", "Vision inference disabled for the rest of this run after repeated timeouts", {
+              model,
+              failures: hfVisionTimeoutFailures,
+              reason: hfVisionDisabledReason,
+            });
+            return null;
+          }
+        } else {
+          hfTextTimeoutFailures += 1;
+          if (hfTextTimeoutFailures >= 2) {
+            hfTextDisabledReason = `Repeated text timeouts: ${message}`;
+            logWarn("hf", "Text inference disabled for the rest of this run after repeated timeouts", {
+              model,
+              failures: hfTextTimeoutFailures,
+              reason: hfTextDisabledReason,
+            });
+            return null;
+          }
+        }
       }
+
+      logWarn("hf", `${needsImage ? "Vision" : "Text"} request threw an exception`, {
+        model,
+        error: message,
+      });
       return null;
     }
   }
 
   if (lastUnsupportedBody) {
-    console.warn(`[HF] no compatible ${needsImage ? "vision" : "text"} model succeeded: ${shortText(lastUnsupportedBody, 240)}`);
+    logWarn("hf", `No compatible ${needsImage ? "vision" : "text"} model succeeded`, {
+      error: shortText(lastUnsupportedBody, 240),
+    });
   }
   return null;
 };

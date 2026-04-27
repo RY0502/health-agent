@@ -35,6 +35,7 @@ export interface AgentInput {
 export interface SearchPlan {
   originalQuery: string;
   normalizedQuery: string;
+  queryCorrections: string[];
   searchDepth: SearchDepth;
   targetWebResults: number;
   targetImageResults: number;

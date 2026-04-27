@@ -1,5 +1,6 @@
 import { config } from "../../config.js";
 import type { SearchPlan, WebSearchHit } from "../../types.js";
+import { logWarn } from "../../utils/log.js";
 
 interface ESearchResponse {
   esearchresult?: {
@@ -29,9 +30,16 @@ const fetchJson = async <T>(url: string): Promise<T | null> => {
     const response = await fetch(url, {
       headers: { "user-agent": "complementary-health-agent/0.1 (+pubmed-eutils)" },
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      logWarn("search:pubmed", "PubMed request failed", { url, status: response.status });
+      return null;
+    }
     return (await response.json()) as T;
-  } catch {
+  } catch (error) {
+    logWarn("search:pubmed", "PubMed request threw an exception", {
+      url,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 };
@@ -49,6 +57,7 @@ export class PubMedSearchService {
       );
       const ids = esearch?.esearchresult?.idlist ?? [];
       if (!ids.length) {
+        logWarn("search:pubmed", "PubMed query returned no ids", { query });
         await sleep(400);
         continue;
       }

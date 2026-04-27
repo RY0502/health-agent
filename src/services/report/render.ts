@@ -3,6 +3,7 @@ import path from "node:path";
 import { chromium } from "playwright";
 import type { ReportArtifact, ReportPayload, RankedRemedy } from "../../types.js";
 import { ensureDir } from "../../utils/fs.js";
+import { logWarn } from "../../utils/log.js";
 
 const escapeHtml = (value: string): string =>
   value
@@ -93,7 +94,11 @@ export const writeReportArtifacts = async (outputDir: string, payload: ReportPay
     await page.setContent(html, { waitUntil: "domcontentloaded" });
     await page.pdf({ path: pdfPath, format: "A4", printBackground: true, margin: { top: "20px", right: "20px", bottom: "20px", left: "20px" } });
     actualPdfPath = pdfPath;
-  } catch {
+  } catch (error) {
+    logWarn("report", "PDF generation failed; HTML and JSON artifacts were still written", {
+      outputDir,
+      error: error instanceof Error ? error.message : String(error),
+    });
     actualPdfPath = undefined;
   } finally {
     await browser?.close().catch(() => undefined);

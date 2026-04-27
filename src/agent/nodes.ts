@@ -13,6 +13,7 @@ import { extractClaimsWithLlm, llmAvailable } from "../services/llm.js";
 import { rankClaims } from "../services/ranking/scoring.js";
 import { chooseBestImage } from "../services/images/verify.js";
 import { writeReportArtifacts } from "../services/report/render.js";
+import { logInfo, logWarn } from "../utils/log.js";
 
 const duckSearchService = new DuckDuckGoSearchService();
 const pubMedSearchService = new PubMedSearchService();
@@ -39,6 +40,15 @@ const EXTRA_DEEP_PATTERNS = [
   /\bextra deep research\b/gi,
   /\bextra-deep search\b/gi,
 ];
+
+const QUERY_TYPO_REPLACEMENTS = [
+  { pattern: /\baccupressure\b/gi, replacement: "acupressure" },
+  { pattern: /\bacupunture\b/gi, replacement: "acupuncture" },
+  { pattern: /\baccupuncture\b/gi, replacement: "acupuncture" },
+  { pattern: /\bpranayam\b/gi, replacement: "pranayama" },
+  { pattern: /\bstess\b/gi, replacement: "stress" },
+  { pattern: /\brelif\b/gi, replacement: "relief" },
+] as const;
 
 const MODALITY_HINTS: Record<Modality, string[]> = {
   acupressure: ["acupressure", "pressure point", "pressure points", "meridian", "pc6", "p6", "yintang"],
@@ -99,12 +109,33 @@ const extractKeyTerms = (query: string): string[] =>
 const detectSearchDepth = (query: string): SearchDepth =>
   EXTRA_DEEP_PATTERNS.some((pattern) => pattern.test(query)) ? "extra_deep" : "default";
 
-const cleanPromptForSearch = (query: string): string => {
+const normalizeQueryTypos = (query: string): { normalized: string; corrections: string[] } => {
+  let output = query;
+  const corrections: string[] = [];
+
+  for (const { pattern, replacement } of QUERY_TYPO_REPLACEMENTS) {
+    const matches = output.match(pattern);
+    if (!matches?.length) continue;
+    output = output.replace(pattern, replacement);
+    corrections.push(...matches.map((match) => `${match} -> ${replacement}`));
+  }
+
+  return {
+    normalized: output,
+    corrections: unique(corrections),
+  };
+};
+
+const cleanPromptForSearch = (query: string): { normalizedQuery: string; corrections: string[] } => {
   let output = query;
   for (const pattern of EXTRA_DEEP_PATTERNS) {
     output = output.replace(pattern, " ");
   }
-  return output.replace(/\s+/g, " ").trim();
+  const typoNormalized = normalizeQueryTypos(output.replace(/\s+/g, " ").trim());
+  return {
+    normalizedQuery: typoNormalized.normalized.replace(/\s+/g, " ").trim(),
+    corrections: typoNormalized.corrections,
+  };
 };
 
 const buildTemplateQueries = (baseQuery: string, keyTerms: string[], templates: string[]): string[] => {
@@ -116,7 +147,7 @@ const buildTemplateQueries = (baseQuery: string, keyTerms: string[], templates: 
 
 const buildPlan = (query: string): SearchPlan => {
   const searchDepth = detectSearchDepth(query);
-  const normalizedQuery = cleanPromptForSearch(query);
+  const { normalizedQuery, corrections } = cleanPromptForSearch(query);
   const modalities = detectModalities(normalizedQuery);
   const keyTerms = extractKeyTerms(normalizedQuery).slice(0, searchDepth === "extra_deep" ? 10 : 6);
   const modalityTerms = modalities.join(" ");
@@ -170,6 +201,7 @@ const buildPlan = (query: string): SearchPlan => {
   return {
     originalQuery: query.trim(),
     normalizedQuery,
+    queryCorrections: corrections,
     searchDepth,
     targetWebResults: searchDepth === "extra_deep" ? 250 : 100,
     targetImageResults: searchDepth === "extra_deep" ? 250 : 100,
@@ -278,6 +310,7 @@ export const initializeNode = async (state: AgentStateType) => {
   };
   const outputDir = buildRunDir(input.outputRoot!, input.query, runId);
   await ensureDir(outputDir);
+  logInfo("agent:init", "Initialized run", { runId, query: input.query, outputDir });
   return {
     input,
     runId,
@@ -295,12 +328,14 @@ export const scopeNode = async (state: AgentStateType) => {
   const lowered = state.input.query.toLowerCase();
   const isOutOfScope = OUT_OF_SCOPE_TERMS.some((term) => lowered.includes(term));
   if (isOutOfScope) {
+    logWarn("agent:scope", "Query routed out of scope", { query: state.input.query });
     return {
       status: "out_of_scope" as const,
       outOfScopeMessage: "This query is out of scope for the agent.",
       notes: [...state.notes, "Out-of-scope handling is intentionally brief and non-escalatory."],
     };
   }
+  logInfo("agent:scope", "Query is in scope", { query: state.input.query });
   return { status: "pending" as const };
 };
 
@@ -308,10 +343,20 @@ export const routeAfterScope = (state: AgentStateType) => (state.status === "out
 
 export const planNode = async (state: AgentStateType) => {
   const plan = buildPlan(state.input.query);
+  const correctionNote = plan.queryCorrections.length
+    ? `Normalized probable query typos for search: ${plan.queryCorrections.join(", ")}.`
+    : undefined;
+  logInfo("agent:plan", "Built search plan", {
+    normalizedQuery: plan.normalizedQuery,
+    modalities: plan.modalities,
+    queryCorrections: plan.queryCorrections,
+    searchDepth: plan.searchDepth,
+  });
   return {
     plan,
     notes: [
       ...state.notes,
+      ...(correctionNote ? [correctionNote] : []),
       `Search plan generated for modalities: ${plan.modalities.join(", ")}.`,
       `Search depth: ${plan.searchDepth}. Website target=${plan.targetWebResults}; image target=${plan.targetImageResults}.`,
     ],
@@ -321,21 +366,45 @@ export const planNode = async (state: AgentStateType) => {
 export const searchNode = async (state: AgentStateType) => {
   const plan = state.plan!;
   const webTarget = Math.max(0, plan.targetWebResults - (plan.searchDepth === "extra_deep" ? 60 : 24));
+  logInfo("agent:search", "Starting source discovery", {
+    normalizedQuery: plan.normalizedQuery,
+    targetWebResults: plan.targetWebResults,
+    queryCorrections: plan.queryCorrections,
+  });
+
   const [duckHits, pubMedHits] = await Promise.all([
     duckSearchService.searchPlan({ ...plan, targetWebResults: webTarget }),
     pubMedSearchService.searchPlan(plan),
   ]);
 
+  logInfo("agent:search", "Base search completed", {
+    duckHits: duckHits.length,
+    pubMedHits: pubMedHits.length,
+  });
+
   let webHits = mergeAndPrioritizeHits([...duckHits, ...pubMedHits], plan.targetWebResults);
 
   if (webHits.length < Math.min(12, plan.targetWebResults)) {
     const targetedQueries = buildTargetedRemedyQueries(plan);
+    logInfo("agent:search", "Running targeted remedy search fallback", {
+      targetedQueryCount: targetedQueries.length,
+      currentHits: webHits.length,
+    });
     const targetedHits = await duckSearchService.searchQueries(
       targetedQueries,
       Math.max(12, Math.min(40, plan.targetWebResults - webHits.length)),
       plan.searchDepth,
     );
+    logInfo("agent:search", "Targeted fallback completed", { targetedHits: targetedHits.length });
     webHits = mergeAndPrioritizeHits([...webHits, ...targetedHits], plan.targetWebResults);
+  }
+
+  if (!webHits.length) {
+    logWarn("agent:search", "No web hits collected", {
+      normalizedQuery: plan.normalizedQuery,
+      queryCorrections: plan.queryCorrections,
+      hint: "Possible causes: misspelled query terms, PubMed miss, or search-engine challenge/block page.",
+    });
   }
 
   await writeFile(path.join(state.outputDir, "web-hits.json"), JSON.stringify(webHits, null, 2), "utf8");
@@ -344,6 +413,11 @@ export const searchNode = async (state: AgentStateType) => {
     notes: [
       ...state.notes,
       `Collected ${webHits.length} deduplicated web results against a target of ${plan.targetWebResults}.`,
+      ...(webHits.length === 0
+        ? [
+            "No search hits were collected. Common causes are misspelled query terms or a search-engine challenge page blocking retrieval on the local machine.",
+          ]
+        : []),
       `Search mix included open web discovery, direct PubMed literature retrieval, and targeted remedy queries when recall was low.`,
     ],
   };
@@ -352,8 +426,10 @@ export const searchNode = async (state: AgentStateType) => {
 export const fetchNode = async (state: AgentStateType) => {
   const fetchLimit = state.plan!.searchDepth === "extra_deep" ? 60 : 30;
   const selected = state.webHits.slice(0, Math.min(state.plan!.targetWebResults, config.maxFetchedDocs, fetchLimit));
+  logInfo("agent:fetch", "Fetching source documents", { selectedHits: selected.length, fetchLimit });
   const documents = await Promise.all(selected.map((hit) => fetchDocument(hit)));
   await writeFile(path.join(state.outputDir, "sources.json"), JSON.stringify(documents, null, 2), "utf8");
+  logInfo("agent:fetch", "Completed source fetch", { documents: documents.length });
   return {
     documents,
     notes: [...state.notes, `Fetched ${documents.length} source documents for extraction and comparison.`],
@@ -362,6 +438,7 @@ export const fetchNode = async (state: AgentStateType) => {
 
 export const extractNode = async (state: AgentStateType) => {
   const claims: ExtractedClaim[] = [];
+  logInfo("agent:extract", "Starting claim extraction", { documents: state.documents.length, llmEnabled: llmAvailable() });
   for (const doc of state.documents) {
     const heuristic = heuristicClaimsFromDocument(state.plan!.normalizedQuery, doc, state.plan!.modalities);
     claims.push(...heuristic);
@@ -372,13 +449,17 @@ export const extractNode = async (state: AgentStateType) => {
           claims.push(claim);
         }
       }
-    } catch {
-      // heuristic extraction remains the baseline path
+    } catch (error) {
+      logWarn("agent:extract", "LLM enrichment failed for a document; keeping heuristic extraction", {
+        url: doc.url,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
   const filtered = claims.filter((claim) => !state.plan!.excludedKeywords.some((term) => claim.claimedBenefit.toLowerCase().includes(term)));
   await writeFile(path.join(state.outputDir, "claims.json"), JSON.stringify(filtered, null, 2), "utf8");
+  logInfo("agent:extract", "Completed claim extraction", { rawClaims: claims.length, filteredClaims: filtered.length });
   return {
     claims: filtered,
     notes: [...state.notes, `Extracted ${filtered.length} remedy mentions from the research corpus.`],
@@ -387,6 +468,7 @@ export const extractNode = async (state: AgentStateType) => {
 
 export const rankNode = async (state: AgentStateType) => {
   const { primary, secondary } = rankClaims(state.claims, state.input.topN ?? config.defaultTopN);
+  logInfo("agent:rank", "Completed ranking", { primary: primary.length, secondary: secondary.length });
   return {
     primaryRanked: primary,
     secondaryRanked: secondary,
@@ -418,6 +500,7 @@ const buildImageQueriesForRemedy = (query: string, remedy: RankedRemedy): string
 
 export const imageNode = async (state: AgentStateType) => {
   const withImages: RankedRemedy[] = [];
+  logInfo("agent:image", "Starting image selection", { remedies: state.primaryRanked.length });
   for (const remedy of state.primaryRanked) {
     const imageQueries = buildImageQueriesForRemedy(state.plan!.normalizedQuery, remedy);
     const supportingDocImages = remedy.supportingClaims.flatMap((claim) => {
@@ -438,6 +521,11 @@ export const imageNode = async (state: AgentStateType) => {
       bestImage = await chooseBestImage(remedy, candidatePool);
     }
 
+    logInfo("agent:image", "Finished image decision for remedy", {
+      remedy: remedy.remedyCanonical,
+      candidatePool: candidatePool.length,
+      selected: Boolean(bestImage),
+    });
     withImages.push({ ...remedy, image: bestImage });
   }
   return {
@@ -472,7 +560,13 @@ export const reportNode = async (state: AgentStateType) => {
     outOfScopeMessage: state.status === "out_of_scope" ? "This query is out of scope for the agent." : undefined,
   };
 
+  logInfo("agent:report", "Writing report artifacts", {
+    status: report.status,
+    primaryResults: report.primaryResults.length,
+    secondaryResults: report.secondaryTopMatches.length,
+  });
   const artifact = await writeReportArtifacts(state.outputDir, report);
+  logInfo("agent:report", "Report artifacts ready", artifact);
   return {
     report,
     artifact,
