@@ -47,6 +47,7 @@ It does not add tense or alarming language.
 - TypeScript
 - LangGraph.js
 - DuckDuckGo search + image search
+- Optional Brave Search API web search backend
 - PubMed E-utilities
 - Cheerio + Playwright retrieval
 - Optional Hugging Face Inference API text/vision reasoning
@@ -98,6 +99,21 @@ curl -X POST http://localhost:3017/research \
 
 ### Required for baseline mode
 No model key is required for heuristic extraction.
+
+### Optional search backend override
+If DuckDuckGo is being challenged on your machine, you can switch to the Brave Search API for web discovery:
+
+```env
+SEARCH_BACKEND=auto
+BRAVE_SEARCH_API_KEY=...
+BRAVE_BASE_URL=https://api.search.brave.com/res/v1
+```
+
+- `SEARCH_BACKEND=auto` uses Brave when `BRAVE_SEARCH_API_KEY` is set and otherwise falls back to DuckDuckGo.
+- `SEARCH_BACKEND=brave` forces Brave for web search.
+- `SEARCH_BACKEND=duckduckgo` forces DuckDuckGo.
+
+Image discovery still uses DuckDuckGo in the current implementation, but the primary remedy search can avoid DuckDuckGo challenge pages once Brave is configured.
 
 ### Optional Hugging Face Inference API reasoning
 For stronger extraction and image verification, configure Hugging Face Inference API:

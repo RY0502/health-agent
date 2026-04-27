@@ -12,6 +12,9 @@ export interface AgentConfig {
   maxImageCandidatesPerRemedy: number;
   outputRoot: string;
   usePlaywrightFallback: boolean;
+  searchBackend: "auto" | "duckduckgo" | "brave";
+  braveSearchApiKey?: string;
+  braveBaseUrl: string;
   hfToken?: string;
   hfBaseUrl: string;
   hfTextModel?: string;
@@ -33,6 +36,11 @@ const boolFromEnv = (key: string, fallback: boolean) => {
   return ["1", "true", "yes", "on"].includes(raw.toLowerCase());
 };
 
+const searchBackendFromEnv = (): AgentConfig["searchBackend"] => {
+  const raw = (process.env.SEARCH_BACKEND ?? "auto").toLowerCase();
+  return raw === "brave" || raw === "duckduckgo" || raw === "auto" ? raw : "auto";
+};
+
 export const config: AgentConfig = {
   port: numberFromEnv("PORT", 3017),
   locale: process.env.LOCALE ?? "en-us",
@@ -42,6 +50,9 @@ export const config: AgentConfig = {
   maxImageCandidatesPerRemedy: numberFromEnv("MAX_IMAGE_CANDIDATES_PER_REMEDY", 250),
   outputRoot: process.env.OUTPUT_ROOT ?? path.resolve(process.cwd(), "outputs"),
   usePlaywrightFallback: boolFromEnv("USE_PLAYWRIGHT_FALLBACK", true),
+  searchBackend: searchBackendFromEnv(),
+  braveSearchApiKey: process.env.BRAVE_SEARCH_API_KEY,
+  braveBaseUrl: process.env.BRAVE_BASE_URL ?? "https://api.search.brave.com/res/v1",
   hfToken: process.env.HF_TOKEN,
   hfBaseUrl: process.env.HF_BASE_URL ?? "https://router.huggingface.co/v1",
   hfTextModel: process.env.HF_TEXT_MODEL ?? "Qwen/Qwen2.5-72B-Instruct",

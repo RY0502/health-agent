@@ -6,6 +6,7 @@ import { buildRunDir, ensureDir } from "../utils/fs.js";
 import { clamp, overlapScore, sentenceWindow, shortText, tokenize, unique } from "../utils/text.js";
 import type { ExtractedClaim, Modality, RankedRemedy, SearchDepth, SearchPlan, SourceDocument, WebSearchHit } from "../types.js";
 import { config } from "../config.js";
+import { BraveSearchService } from "../services/search/brave.js";
 import { DuckDuckGoSearchService } from "../services/search/duckduckgo.js";
 import { PubMedSearchService } from "../services/search/pubmed.js";
 import { fetchDocument } from "../services/retrieval/fetch.js";
@@ -15,8 +16,21 @@ import { chooseBestImage } from "../services/images/verify.js";
 import { writeReportArtifacts } from "../services/report/render.js";
 import { logInfo, logWarn } from "../utils/log.js";
 
-const duckSearchService = new DuckDuckGoSearchService();
-const pubMedSearchService = new PubMedSearchService();
+type WebSearchServiceLike = Pick<DuckDuckGoSearchService, "searchPlan" | "searchQueries">;
+
+const buildWebSearchService = (): { service: WebSearchServiceLike; backend: "duckduckgo" | "brave" } => {
+  const wantsBrave = config.searchBackend === "brave" || (config.searchBackend === "auto" && Boolean(config.braveSearchApiKey));
+  if (wantsBrave) {
+    if (config.braveSearchApiKey) {
+      return { service: new BraveSearchService(config.braveSearchApiKey), backend: "brave" };
+    }
+    logWarn("agent:search", "Brave search backend requested but BRAVE_SEARCH_API_KEY is missing; falling back to DuckDuckGo.");
+  }
+  return { service: new DuckDuckGoSearchService(), backend: "duckduckgo" };
+};
+
+const buildImageSearchService = (): DuckDuckGoSearchService => new DuckDuckGoSearchService();
+const buildPubMedSearchService = (): PubMedSearchService => new PubMedSearchService();
 
 const OUT_OF_SCOPE_TERMS = [
   "heart attack",
@@ -366,36 +380,41 @@ export const planNode = async (state: AgentStateType) => {
 export const searchNode = async (state: AgentStateType) => {
   const plan = state.plan!;
   const webTarget = Math.max(0, plan.targetWebResults - (plan.searchDepth === "extra_deep" ? 60 : 24));
+  const { service: webSearchService, backend } = buildWebSearchService();
+  const pubMedSearchService = buildPubMedSearchService();
   logInfo("agent:search", "Starting source discovery", {
     normalizedQuery: plan.normalizedQuery,
     targetWebResults: plan.targetWebResults,
     queryCorrections: plan.queryCorrections,
+    backend,
   });
 
-  const [duckHits, pubMedHits] = await Promise.all([
-    duckSearchService.searchPlan({ ...plan, targetWebResults: webTarget }),
+  const [backendHits, pubMedHits] = await Promise.all([
+    webSearchService.searchPlan({ ...plan, targetWebResults: webTarget }),
     pubMedSearchService.searchPlan(plan),
   ]);
 
   logInfo("agent:search", "Base search completed", {
-    duckHits: duckHits.length,
+    backend,
+    backendHits: backendHits.length,
     pubMedHits: pubMedHits.length,
   });
 
-  let webHits = mergeAndPrioritizeHits([...duckHits, ...pubMedHits], plan.targetWebResults);
+  let webHits = mergeAndPrioritizeHits([...backendHits, ...pubMedHits], plan.targetWebResults);
 
   if (webHits.length < Math.min(12, plan.targetWebResults)) {
     const targetedQueries = buildTargetedRemedyQueries(plan);
     logInfo("agent:search", "Running targeted remedy search fallback", {
+      backend,
       targetedQueryCount: targetedQueries.length,
       currentHits: webHits.length,
     });
-    const targetedHits = await duckSearchService.searchQueries(
+    const targetedHits = await webSearchService.searchQueries(
       targetedQueries,
       Math.max(12, Math.min(40, plan.targetWebResults - webHits.length)),
       plan.searchDepth,
     );
-    logInfo("agent:search", "Targeted fallback completed", { targetedHits: targetedHits.length });
+    logInfo("agent:search", "Targeted fallback completed", { backend, targetedHits: targetedHits.length });
     webHits = mergeAndPrioritizeHits([...webHits, ...targetedHits], plan.targetWebResults);
   }
 
@@ -500,6 +519,7 @@ const buildImageQueriesForRemedy = (query: string, remedy: RankedRemedy): string
 
 export const imageNode = async (state: AgentStateType) => {
   const withImages: RankedRemedy[] = [];
+  const imageSearchService = buildImageSearchService();
   logInfo("agent:image", "Starting image selection", { remedies: state.primaryRanked.length });
   for (const remedy of state.primaryRanked) {
     const imageQueries = buildImageQueriesForRemedy(state.plan!.normalizedQuery, remedy);
@@ -516,7 +536,7 @@ export const imageNode = async (state: AgentStateType) => {
 
     if (!bestImage) {
       const perQueryTarget = Math.max(20, Math.ceil(state.plan!.targetImageResults / imageQueries.length));
-      const searched = await Promise.all(imageQueries.map((query) => duckSearchService.searchRemedyImages(query, perQueryTarget)));
+      const searched = await Promise.all(imageQueries.map((query) => imageSearchService.searchRemedyImages(query, perQueryTarget)));
       candidatePool = [...supportingDocImages, ...searched.flat()].slice(0, state.plan!.targetImageResults);
       bestImage = await chooseBestImage(remedy, candidatePool);
     }
