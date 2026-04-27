@@ -61,6 +61,11 @@ const looksLikeLiteChallenge = (html: string): boolean =>
   /anomaly\.js|challenge-form|bots use DuckDuckGo too/i.test(html);
 
 const execFileAsync = promisify(execFile);
+const PYTHON_COMMAND_CANDIDATES: Array<{ command: string; args: string[] }> = [
+  { command: "python3", args: [] },
+  { command: "python", args: [] },
+  { command: "py", args: ["-3"] },
+];
 
 export class DuckDuckGoSearchService {
   private async executeLiteSearch(query: string): Promise<SearchResult[]> {
@@ -73,9 +78,27 @@ export class DuckDuckGoSearchService {
         "with urllib.request.urlopen(req, timeout=20) as r:",
         "    sys.stdout.write(r.read().decode('utf-8','ignore'))",
       ].join("\n");
-      const { stdout } = await execFileAsync("python3", ["-c", py, query], { maxBuffer: 5 * 1024 * 1024 });
+
+      let stdout = "";
+      let lastError: unknown = null;
+      let interpreterUsed: string | null = null;
+      for (const candidate of PYTHON_COMMAND_CANDIDATES) {
+        try {
+          const result = await execFileAsync(candidate.command, [...candidate.args, "-c", py, query], { maxBuffer: 5 * 1024 * 1024 });
+          stdout = result.stdout;
+          interpreterUsed = [candidate.command, ...candidate.args].join(" ");
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      if (!interpreterUsed) {
+        throw lastError instanceof Error ? lastError : new Error("No usable Python interpreter found for DuckDuckGo lite fallback.");
+      }
+
       if (looksLikeLiteChallenge(stdout)) {
-        logWarn("search:duckduckgo", "DuckDuckGo lite returned a challenge page", { query });
+        logWarn("search:duckduckgo", "DuckDuckGo lite returned a challenge page", { query, interpreterUsed });
         return [];
       }
       const $ = cheerio.load(stdout);
