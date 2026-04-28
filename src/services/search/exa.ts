@@ -2,19 +2,14 @@ import { config } from "../../config.js";
 import type { SearchPlan, SearchDepth, SourceTier, WebSearchHit } from "../../types.js";
 import { logWarn } from "../../utils/log.js";
 
-interface BraveWebSearchResult {
+interface ExaSearchResult {
   title?: string;
-  url?: string;
-  description?: string;
-  meta_url?: {
-    hostname?: string;
-  };
+  url: string;
+  text?: string;
 }
 
-interface BraveWebSearchResponse {
-  web?: {
-    results?: BraveWebSearchResult[];
-  };
+interface ExaSearchResponse {
+  results?: ExaSearchResult[];
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -41,71 +36,60 @@ const scoreTierFromDomain = (domain: string): SourceTier => {
   return "open_web";
 };
 
-const localeToBraveParams = (locale: string): { country?: string; search_lang?: string } => {
-  const [language, country] = locale.toLowerCase().split(/[-_]/);
-  return {
-    country: country || undefined,
-    search_lang: language || undefined,
-  };
-};
-
-export class BraveSearchService {
+export class ExaSearchService {
   private apiKey: string;
 
-  constructor(apiKey = config.braveSearchApiKey) {
-    if (!apiKey) throw new Error("Brave Search API key is required.");
+  constructor(apiKey = config.exaSearchApiKey) {
+    if (!apiKey) throw new Error("Exa Search API key is required.");
     this.apiKey = apiKey;
   }
 
   private async executeSearch(query: string, count: number): Promise<WebSearchHit[]> {
     try {
-      const params = new URLSearchParams({
-        q: query,
-        count: String(Math.max(1, Math.min(20, count))),
-        safesearch: "strict",
-        spellcheck: "true",
-        ...localeToBraveParams(config.locale),
-      });
-      const response = await fetch(`${config.braveBaseUrl.replace(/\/$/, "")}/web/search?${params.toString()}`, {
+      const response = await fetch(`${config.exaBaseUrl.replace(/\/$/, "")}/search`, {
+        method: "POST",
         headers: {
-          Accept: "application/json",
-          "X-Subscription-Token": this.apiKey,
+          "Content-Type": "application/json",
+          "x-api-key": this.apiKey,
         },
+        body: JSON.stringify({
+          query,
+          numResults: Math.max(1, Math.min(20, count)),
+          useAutoprompt: true,
+        }),
         signal: AbortSignal.timeout(20_000),
       });
 
       if (!response.ok) {
-        logWarn("search:brave", "Brave search request failed", { query, status: response.status });
+        logWarn("search:exa", "Exa search request failed", { query, status: response.status });
         return [];
       }
 
-      const json = (await response.json()) as BraveWebSearchResponse;
-      return (json.web?.results ?? [])
+      const json = (await response.json()) as ExaSearchResponse;
+      return (json.results ?? [])
         .flatMap((result) => {
           const url = result.url?.trim();
           if (!url) return [];
 
-          let domain = result.meta_url?.hostname ?? "";
-          if (!domain) {
-            try {
-              domain = new URL(url).hostname;
-            } catch {
-              return [];
-            }
+          let domain = "";
+          try {
+            domain = new URL(url).hostname;
+          } catch {
+            return [];
           }
 
           return [{
             query,
             title: result.title?.trim() || url,
             url,
-            snippet: result.description?.trim() || "",
+            snippet: result.text?.trim() || "",
             domain,
             sourceTierHint: scoreTierFromDomain(domain),
           } satisfies WebSearchHit];
         })
         .slice(0, count);
     } catch (error) {
-      logWarn("search:brave", "Brave search request threw an exception", {
+      logWarn("search:exa", "Exa search request threw an exception", {
         query,
         error: error instanceof Error ? error.message : String(error),
       });

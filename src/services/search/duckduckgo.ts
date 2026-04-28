@@ -261,7 +261,7 @@ export class DuckDuckGoSearchService {
         try {
           aggregate.push({
             query,
-            imageUrl: image.image,
+            imageUrl: image.thumbnail || image.image,
             thumbnailUrl: image.thumbnail,
             sourcePageUrl: image.url,
             sourceDomain: new URL(image.url).hostname,

@@ -91,7 +91,7 @@ export const writeReportArtifacts = async (outputDir: string, payload: ReportPay
   try {
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
-    await page.setContent(html, { waitUntil: "domcontentloaded" });
+    await page.setContent(html, { waitUntil: "networkidle" });
     await page.pdf({ path: pdfPath, format: "A4", printBackground: true, margin: { top: "20px", right: "20px", bottom: "20px", left: "20px" } });
     actualPdfPath = pdfPath;
   } catch (error) {

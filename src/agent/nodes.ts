@@ -6,7 +6,7 @@ import { buildRunDir, ensureDir } from "../utils/fs.js";
 import { clamp, overlapScore, sentenceWindow, shortText, tokenize, unique } from "../utils/text.js";
 import type { ExtractedClaim, Modality, RankedRemedy, SearchDepth, SearchPlan, SourceDocument, WebSearchHit } from "../types.js";
 import { config } from "../config.js";
-import { BraveSearchService } from "../services/search/brave.js";
+import { ExaSearchService } from "../services/search/exa.js";
 import { DuckDuckGoSearchService } from "../services/search/duckduckgo.js";
 import { PubMedSearchService } from "../services/search/pubmed.js";
 import { fetchDocument } from "../services/retrieval/fetch.js";
@@ -18,13 +18,13 @@ import { logInfo, logWarn } from "../utils/log.js";
 
 type WebSearchServiceLike = Pick<DuckDuckGoSearchService, "searchPlan" | "searchQueries">;
 
-const buildWebSearchService = (): { service: WebSearchServiceLike; backend: "duckduckgo" | "brave" } => {
-  const wantsBrave = config.searchBackend === "brave" || (config.searchBackend === "auto" && Boolean(config.braveSearchApiKey));
-  if (wantsBrave) {
-    if (config.braveSearchApiKey) {
-      return { service: new BraveSearchService(config.braveSearchApiKey), backend: "brave" };
+const buildWebSearchService = (): { service: WebSearchServiceLike; backend: "duckduckgo" | "exa" } => {
+  const wantsExa = config.searchBackend === "exa" || (config.searchBackend === "auto" && Boolean(config.exaSearchApiKey));
+  if (wantsExa) {
+    if (config.exaSearchApiKey) {
+      return { service: new ExaSearchService(config.exaSearchApiKey), backend: "exa" };
     }
-    logWarn("agent:search", "Brave search backend requested but BRAVE_SEARCH_API_KEY is missing; falling back to DuckDuckGo.");
+    logWarn("agent:search", "Exa search backend requested but EXA_SEARCH_API_KEY is missing; falling back to DuckDuckGo.");
   }
   return { service: new DuckDuckGoSearchService(), backend: "duckduckgo" };
 };
