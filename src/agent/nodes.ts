@@ -74,11 +74,18 @@ const MODALITY_HINTS: Record<Modality, string[]> = {
 };
 
 const REMEDY_LEXICON: Array<{ canonical: string; aliases: string[]; modality: Modality; safety: string[] }> = [
-  { canonical: "Yintang", aliases: ["yintang", "extra 1"], modality: "acupressure", safety: ["Avoid pressing irritated skin."] },
-  { canonical: "PC6 (Neiguan)", aliases: ["pc6", "p6", "neiguan"], modality: "acupressure", safety: ["Use moderate pressure and avoid bruised skin."] },
-  { canonical: "HT7 (Shenmen)", aliases: ["ht7", "shenmen"], modality: "acupressure", safety: ["Reduce pressure if tenderness increases."] },
-  { canonical: "GV20 (Baihui)", aliases: ["gv20", "baihui"], modality: "acupressure", safety: ["Avoid aggressive stimulation if dizzy."] },
-  { canonical: "LI4 (Hegu)", aliases: ["li4", "hegu"], modality: "acupressure", safety: ["Often avoided during pregnancy unless guided by a clinician."] },
+  { canonical: "Yintang", aliases: ["yintang", "extra 1", "gv24.5", "du24.5"], modality: "acupressure", safety: ["Avoid pressing irritated skin."] },
+  { canonical: "PC6 (Neiguan)", aliases: ["pc6", "p6", "p-6", "pericardium 6", "neiguan"], modality: "acupressure", safety: ["Use moderate pressure and avoid bruised skin."] },
+  { canonical: "HT7 (Shenmen)", aliases: ["ht7", "ht-7", "heart 7", "shenmen"], modality: "acupressure", safety: ["Reduce pressure if tenderness increases."] },
+  { canonical: "GV20 (Baihui)", aliases: ["gv20", "gv-20", "du20", "du-20", "baihui", "governing vessel 20"], modality: "acupressure", safety: ["Avoid aggressive stimulation if dizzy."] },
+  { canonical: "LI4 (Hegu)", aliases: ["li4", "li-4", "large intestine 4", "hegu"], modality: "acupressure", safety: ["Often avoided during pregnancy unless guided by a clinician."] },
+  { canonical: "SP6 (Sanyinjiao)", aliases: ["sp6", "sp-6", "spleen 6", "sanyinjiao"], modality: "acupressure", safety: ["Often avoided during pregnancy unless guided by a clinician."] },
+  { canonical: "LV3 (Taichong)", aliases: ["lv3", "lv-3", "lr3", "lr-3", "liver 3", "taichong"], modality: "acupressure", safety: ["Reduce pressure if the top of the foot feels irritated or bruised."] },
+  { canonical: "GB20 (Fengchi)", aliases: ["gb20", "gb-20", "gallbladder 20", "fengchi"], modality: "acupressure", safety: ["Use gentle pressure if the neck area is very tender."] },
+  { canonical: "GB21 (Jianjing)", aliases: ["gb21", "gb-21", "gallbladder 21", "jianjing"], modality: "acupressure", safety: ["Often avoided during pregnancy unless guided by a clinician."] },
+  { canonical: "TE5 (Waiguan)", aliases: ["te5", "te-5", "sj5", "sj-5", "triple energizer 5", "san jiao 5", "waiguan"], modality: "acupressure", safety: ["Ease off if the outer forearm becomes sore or irritated."] },
+  { canonical: "CV17 (Shanzhong)", aliases: ["cv17", "cv-17", "ren17", "ren-17", "conception vessel 17", "shanzhong"], modality: "acupressure", safety: ["Use light pressure over the chest and avoid pressing directly on painful areas."] },
+  { canonical: "PC8 (Laogong)", aliases: ["pc8", "pc-8", "pericardium 8", "laogong"], modality: "acupressure", safety: ["Stop if pressing the palm increases hand pain."] },
   { canonical: "Ear Shen Men", aliases: ["ear shen men", "ear shenmen", "auricular shen men"], modality: "acupressure", safety: ["Keep ear acupressure gentle."] },
   { canonical: "Gyan Mudra", aliases: ["gyan mudra", "jnana mudra"], modality: "mudra", safety: ["Stop if hand strain appears."] },
   { canonical: "Prana Mudra", aliases: ["prana mudra"], modality: "mudra", safety: ["Keep wrists relaxed."] },
@@ -104,6 +111,8 @@ const REMEDY_LEXICON: Array<{ canonical: string; aliases: string[]; modality: Mo
   { canonical: "Protein-Forward Meals", aliases: ["protein", "high-protein", "protein-forward meals"], modality: "lifestyle", safety: ["Match intake to personal needs and preferences."] },
   { canonical: "Surya Namaskar", aliases: ["surya namaskar", "sun salutation"], modality: "yoga", safety: ["Scale repetitions to current capacity."] },
 ];
+
+const normalizeAliasCorpus = (value: string): string => value.toLowerCase().replace(/[^a-z0-9.]+/g, "");
 
 const hasAny = (query: string, needles: string[]): boolean => needles.some((needle) => query.includes(needle));
 
@@ -233,13 +242,20 @@ const buildPlan = (query: string): SearchPlan => {
 
 const heuristicClaimsFromDocument = (query: string, doc: SourceDocument, modalities: Modality[]): ExtractedClaim[] => {
   const loweredText = `${doc.title} ${doc.text}`.toLowerCase();
+  const normalizedText = normalizeAliasCorpus(`${doc.title} ${doc.text}`);
   const condition = shortText(query, 120);
   const queryTokens = tokenize(query);
 
   return REMEDY_LEXICON.filter((item) => modalities.includes(item.modality))
-    .filter((item) => item.aliases.some((alias) => loweredText.includes(alias.toLowerCase())))
+    .filter((item) => item.aliases.some((alias) => {
+      const normalizedAlias = normalizeAliasCorpus(alias);
+      return loweredText.includes(alias.toLowerCase()) || (normalizedAlias.length >= 3 && normalizedText.includes(normalizedAlias));
+    }))
     .map((item) => {
-      const matchedAlias = item.aliases.find((alias) => loweredText.includes(alias.toLowerCase())) ?? item.canonical;
+      const matchedAlias = item.aliases.find((alias) => {
+        const normalizedAlias = normalizeAliasCorpus(alias);
+        return loweredText.includes(alias.toLowerCase()) || (normalizedAlias.length >= 3 && normalizedText.includes(normalizedAlias));
+      }) ?? item.canonical;
       const localContext = sentenceWindow(doc.text, matchedAlias, 260) || sentenceWindow(doc.snippet, matchedAlias, 160);
       const specificity = Math.max(
         overlapScore(localContext, queryTokens),
@@ -309,8 +325,26 @@ const mergeAndPrioritizeHits = (hits: WebSearchHit[], limit: number): WebSearchH
   for (const hit of hits) {
     if (!deduped.has(hit.url)) deduped.set(hit.url, hit);
   }
+
+  const pointSignal = (hit: WebSearchHit): number => {
+    const corpus = normalizeAliasCorpus(`${hit.title} ${hit.snippet}`);
+    return REMEDY_LEXICON
+      .filter((item) => item.modality === "acupressure")
+      .filter((item) => item.aliases.some((alias) => {
+        const normalizedAlias = normalizeAliasCorpus(alias);
+        return normalizedAlias.length >= 3 && corpus.includes(normalizedAlias);
+      }))
+      .length;
+  };
+
+  const querySignal = (hit: WebSearchHit): number => overlapScore(`${hit.title} ${hit.snippet}`, hit.query);
+
   return [...deduped.values()]
-    .sort((a, b) => priority[b.sourceTierHint] - priority[a.sourceTierHint])
+    .sort((a, b) =>
+      priority[b.sourceTierHint] - priority[a.sourceTierHint] ||
+      pointSignal(b) - pointSignal(a) ||
+      querySignal(b) - querySignal(a),
+    )
     .slice(0, limit);
 };
 
@@ -443,7 +477,7 @@ export const searchNode = async (state: AgentStateType) => {
 };
 
 export const fetchNode = async (state: AgentStateType) => {
-  const fetchLimit = state.plan!.searchDepth === "extra_deep" ? 60 : 30;
+  const fetchLimit = state.plan!.searchDepth === "extra_deep" ? 80 : 50;
   const selected = state.webHits.slice(0, Math.min(state.plan!.targetWebResults, config.maxFetchedDocs, fetchLimit));
   logInfo("agent:fetch", "Fetching source documents", { selectedHits: selected.length, fetchLimit });
   const documents = await Promise.all(selected.map((hit) => fetchDocument(hit)));
